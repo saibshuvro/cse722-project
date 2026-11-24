@@ -158,11 +158,27 @@ function normalizeMessageText(input: string): string {
   return text;
 }
 
+function compareConnectionTuples(
+  firstDialerId: string,
+  firstConnectionId: string,
+  secondDialerId: string,
+  secondConnectionId: string,
+): number {
+  if (firstDialerId !== secondDialerId) {
+    return firstDialerId < secondDialerId ? -1 : 1;
+  }
+  if (firstConnectionId === secondConnectionId) {
+    return 0;
+  }
+  return firstConnectionId < secondConnectionId ? -1 : 1;
+}
+
 export class PeerService extends EventEmitter {
   private readonly installationId: string;
   private readonly identity: LocalIdentity | null;
   private readonly config: AppConfig;
   private readonly inboundSockets = new Set<Socket>();
+  private readonly incomingCandidates = new Set<PeerSession>();
   private server: TcpServer | null = null;
   private session: PeerSession | null = null;
   private boundChatPort: number;
@@ -272,6 +288,9 @@ export class PeerService extends EventEmitter {
     if (this.session) {
       this.endSession(this.session, "Application stopped.", false, true);
     }
+    for (const candidate of this.incomingCandidates) {
+      this.discardIncomingCandidate(candidate, true);
+    }
 
     const server = this.server;
     this.server = null;
@@ -296,7 +315,7 @@ export class PeerService extends EventEmitter {
     if (!Number.isInteger(peerPort) || peerPort < 1 || peerPort > 65_535) {
       throw new Error("Peer port must be between 1 and 65535.");
     }
-    if (this.session) {
+    if (this.session || this.incomingCandidates.size > 0) {
       throw new Error("Disconnect the current or pending peer before connecting again.");
     }
 
@@ -627,7 +646,11 @@ export class PeerService extends EventEmitter {
     const peerIp = normalizeIp(socket.remoteAddress);
     const peerPort = socket.remotePort ?? 0;
 
-    if (this.session) {
+    const canResolveSimultaneousConnection =
+      this.session?.direction === "outgoing" &&
+      this.session.phase === "WAITING_FOR_ACK" &&
+      this.incomingCandidates.size === 0;
+    if (this.session && !canResolveSimultaneousConnection) {
       const busyFrame: PeerFrame = {
         v: PROTOCOL_VERSION,
         type: "protocol_error",
@@ -665,22 +688,35 @@ export class PeerService extends EventEmitter {
       secure: null,
       handshakeTimer: null,
     };
-    this.session = session;
+    if (canResolveSimultaneousConnection) {
+      this.incomingCandidates.add(session);
+      this.emitSecurity(
+        "info",
+        `A simultaneous incoming connection from ${peerIp} is awaiting deterministic resolution.`,
+      );
+    } else {
+      this.session = session;
+    }
     this.attachSession(session);
     this.startHandshakeTimer(session);
-    this.emitSecurity("info", `Incoming TCP connection from ${peerIp}; waiting for handshake.`);
-    this.emitState();
+    if (!canResolveSimultaneousConnection) {
+      this.emitSecurity("info", `Incoming TCP connection from ${peerIp}; waiting for handshake.`);
+      this.emitState();
+    }
   }
 
   private attachSession(session: PeerSession): void {
     session.socket.setNoDelay(true);
     session.socket.on("data", (chunk) => {
-      if (this.session !== session) {
+      if (!this.isTrackedSession(session)) {
         return;
       }
       try {
         const data = typeof chunk === "string" ? Buffer.from(chunk, "utf8") : chunk;
         for (const frame of session.decoder.push(data)) {
+          if (!this.isTrackedSession(session)) {
+            break;
+          }
           this.handleFrame(session, frame);
         }
       } catch (error) {
@@ -691,16 +727,22 @@ export class PeerService extends EventEmitter {
     });
 
     session.socket.on("error", (error) => {
-      if (this.session !== session) {
+      if (!this.isTrackedSession(session)) {
         return;
       }
       this.emitSecurity("error", `Peer connection error: ${errorMessage(error)}`);
-      this.endSession(session, "Connection failed.", false, true);
+      if (this.session === session) {
+        this.endSession(session, "Connection failed.", false, true);
+      } else {
+        this.discardIncomingCandidate(session, true);
+      }
     });
 
     session.socket.on("close", () => {
       if (this.session === session) {
         this.endSession(session, "Peer connection closed.", false, true);
+      } else if (this.incomingCandidates.has(session)) {
+        this.discardIncomingCandidate(session, false);
       }
     });
   }
@@ -778,8 +820,41 @@ export class PeerService extends EventEmitter {
       this.failProtocol(session, "invalid_frame", "A client cannot connect to itself.");
       return;
     }
-
     session.connectionId = frame.connectionId;
+
+    if (this.incomingCandidates.has(session)) {
+      const current = this.session;
+      if (!current) {
+        this.incomingCandidates.delete(session);
+        this.session = session;
+      } else if (
+        current.direction === "outgoing" &&
+        current.phase === "WAITING_FOR_ACK" &&
+        compareConnectionTuples(
+          frame.dialerId,
+          frame.connectionId,
+          this.installationId,
+          current.connectionId,
+        ) < 0
+      ) {
+        this.clearHandshakeTimer(current);
+        this.session = session;
+        this.incomingCandidates.delete(session);
+        current.socket.destroy();
+        this.emitSecurity(
+          "info",
+          "Resolved simultaneous connection attempts by retaining the deterministic incoming connection.",
+        );
+      } else {
+        this.rejectDuplicateCandidate(session);
+        this.emitSecurity(
+          "info",
+          "Resolved simultaneous connection attempts by retaining the deterministic outgoing connection.",
+        );
+        return;
+      }
+    }
+
     session.peerInstallationId = frame.installationId;
     this.writeFrame(session, {
       v: PROTOCOL_VERSION,
@@ -1384,12 +1459,16 @@ export class PeerService extends EventEmitter {
       code,
       message,
     });
-    this.endSession(session, "Disconnected after a protocol failure.", false, false);
+    if (this.session === session) {
+      this.endSession(session, "Disconnected after a protocol failure.", false, false);
+    } else {
+      this.discardIncomingCandidate(session, false);
+    }
   }
 
   private startHandshakeTimer(session: PeerSession): void {
     session.handshakeTimer = setTimeout(() => {
-      if (this.session === session && session.phase !== "READY") {
+      if (this.isTrackedSession(session) && session.phase !== "READY") {
         this.failProtocol(session, "handshake_timeout", "Peer handshake timed out.");
       }
     }, HANDSHAKE_TIMEOUT_MS);
@@ -1401,6 +1480,38 @@ export class PeerService extends EventEmitter {
       clearTimeout(session.handshakeTimer);
       session.handshakeTimer = null;
     }
+  }
+
+  private isTrackedSession(session: PeerSession): boolean {
+    return this.session === session || this.incomingCandidates.has(session);
+  }
+
+  private rejectDuplicateCandidate(session: PeerSession): void {
+    this.writeFrame(session, {
+      v: PROTOCOL_VERSION,
+      type: "protocol_error",
+      connectionId: session.connectionId,
+      code: "busy",
+      message: "A deterministic simultaneous connection was retained instead.",
+    });
+    this.discardIncomingCandidate(session, false);
+  }
+
+  private discardIncomingCandidate(
+    session: PeerSession,
+    destroySocket: boolean,
+  ): void {
+    if (!this.incomingCandidates.delete(session)) {
+      return;
+    }
+    this.clearHandshakeTimer(session);
+    if (destroySocket) {
+      session.socket.destroy();
+      return;
+    }
+    session.socket.end();
+    const destroyTimer = setTimeout(() => session.socket.destroy(), 500);
+    destroyTimer.unref();
   }
 
   private endSession(

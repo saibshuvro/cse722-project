@@ -1,4 +1,5 @@
 import { mkdtemp, rm } from "node:fs/promises";
+import { Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -147,6 +148,37 @@ describe("PeerService", () => {
     expect(() => service.sendClearMessage("hello")).toThrow(/Connect/);
   });
 
+  it("logs and disconnects when a peer sends a malformed frame", async () => {
+    const service = new PeerService(testConfig());
+    const socket = new Socket();
+
+    try {
+      await service.start();
+      const connecting = waitForState(service, "CONNECTING");
+      await new Promise<void>((resolve, reject) => {
+        socket.once("error", reject);
+        socket.connect(service.listeningPort, "127.0.0.1", () => resolve());
+      });
+      await connecting;
+
+      const protocolFailure = waitForSecurityEvent(
+        service,
+        (event) => event.severity === "error" && event.message.includes("malformed JSON"),
+      );
+      socket.write("not-json\n");
+
+      await protocolFailure;
+      await waitForSnapshot(
+        service,
+        (snapshot) => snapshot.state === "DISCONNECTED",
+        "disconnect after malformed frame",
+      );
+    } finally {
+      socket.destroy();
+      await service.stop();
+    }
+  });
+
   it("rejects an additional peer without disrupting the active connection", async () => {
     const first = new PeerService(testConfig());
     const second = new PeerService(testConfig());
@@ -168,6 +200,37 @@ describe("PeerService", () => {
       expect(second.getSnapshot().state).toBe("CONNECTED_CLEAR");
     } finally {
       await Promise.all([first.stop(), second.stop(), third.stop()]);
+    }
+  });
+
+  it("resolves simultaneous connection attempts to one shared connection", async () => {
+    const first = new PeerService(testConfig());
+    const second = new PeerService(testConfig());
+
+    try {
+      await Promise.all([first.start(), second.start()]);
+      const firstConnected = waitForState(first, "CONNECTED_CLEAR");
+      const secondConnected = waitForState(second, "CONNECTED_CLEAR");
+
+      first.connect("127.0.0.1", second.listeningPort);
+      second.connect("127.0.0.1", first.listeningPort);
+      const [firstSnapshot, secondSnapshot] = await Promise.all([
+        firstConnected,
+        secondConnected,
+      ]);
+
+      expect(new Set([firstSnapshot.direction, secondSnapshot.direction])).toEqual(
+        new Set(["incoming", "outgoing"]),
+      );
+
+      const secondReceives = waitForIncomingMessage(second);
+      first.sendClearMessage("simultaneous connection resolved");
+      await expect(secondReceives).resolves.toMatchObject({
+        security: "PLAINTEXT",
+        text: "simultaneous connection resolved",
+      });
+    } finally {
+      await Promise.all([first.stop(), second.stop()]);
     }
   });
 
