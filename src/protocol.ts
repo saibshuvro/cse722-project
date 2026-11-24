@@ -21,7 +21,7 @@ const signatureSchema = z
 const base64Schema = z
   .string()
   .min(1)
-  .max(2_048)
+  .max(MAX_FRAME_BYTES)
   .regex(/^[A-Za-z0-9+/]+={0,2}$/);
 const sessionIdSchema = z.string().regex(/^[A-Za-z0-9+/]{22}==$/);
 const authTagSchema = z.string().regex(/^[A-Za-z0-9+/]{22}==$/);
@@ -132,6 +132,30 @@ const secureReadySchema = z
   })
   .strict();
 
+const secureMessageSchema = z
+  .object({
+    v: z.literal(PROTOCOL_VERSION),
+    type: z.literal("secure_message"),
+    connectionId: uuidSchema,
+    sessionId: sessionIdSchema,
+    senderFingerprint: fingerprintSchema,
+    algorithm: z.literal("AES-256-GCM"),
+    sequence: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER),
+    ciphertext: base64Schema,
+    authTag: authTagSchema,
+  })
+  .strict();
+
+const secureMessagePayloadSchema = z
+  .object({
+    v: z.literal(PROTOCOL_VERSION),
+    type: z.literal("secure_message_payload"),
+    messageId: uuidSchema,
+    sentAt: timestampSchema,
+    text: messageTextSchema,
+  })
+  .strict();
+
 const protocolErrorSchema = z
   .object({
     v: z.literal(PROTOCOL_VERSION),
@@ -167,6 +191,7 @@ export const peerFrameSchema = z.discriminatedUnion("type", [
   keyOfferSchema,
   keyConfirmSchema,
   secureReadySchema,
+  secureMessageSchema,
   protocolErrorSchema,
   goodbyeSchema,
 ]);
@@ -181,6 +206,8 @@ export type FingerprintVerifiedFrame = z.infer<typeof fingerprintVerifiedSchema>
 export type KeyOfferFrame = z.infer<typeof keyOfferSchema>;
 export type KeyConfirmFrame = z.infer<typeof keyConfirmSchema>;
 export type SecureReadyFrame = z.infer<typeof secureReadySchema>;
+export type SecureMessageFrame = z.infer<typeof secureMessageSchema>;
+export type SecureMessagePayload = z.infer<typeof secureMessagePayloadSchema>;
 export type ProtocolErrorFrame = z.infer<typeof protocolErrorSchema>;
 export type ProtocolErrorCode = ProtocolErrorFrame["code"];
 
@@ -217,6 +244,28 @@ export function decodeFrame(line: Buffer): PeerFrame {
   const result = peerFrameSchema.safeParse(value);
   if (!result.success) {
     throw new FrameDecodeError("Received a frame that does not match protocol version 1.");
+  }
+  return result.data;
+}
+
+export function encodeSecureMessagePayload(payload: SecureMessagePayload): Buffer {
+  const result = secureMessagePayloadSchema.safeParse(payload);
+  if (!result.success) {
+    throw new FrameDecodeError("Encrypted message payload is invalid.");
+  }
+  return Buffer.from(JSON.stringify(result.data), "utf8");
+}
+
+export function decodeSecureMessagePayload(payload: Buffer): SecureMessagePayload {
+  let value: unknown;
+  try {
+    value = JSON.parse(payload.toString("utf8"));
+  } catch {
+    throw new FrameDecodeError("Decrypted message payload is not valid JSON.");
+  }
+  const result = secureMessagePayloadSchema.safeParse(value);
+  if (!result.success) {
+    throw new FrameDecodeError("Decrypted message payload is invalid.");
   }
   return result.data;
 }

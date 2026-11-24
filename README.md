@@ -2,7 +2,7 @@
 
 A two-peer chat application for demonstrating plaintext communication, manual identity-key verification, authenticated AES-256 key transfer, and AES-256-GCM encrypted messaging.
 
-Phase 5 provides direct TCP plaintext chat, persistent RSA-3072 identities, mutual out-of-band fingerprint verification, and authenticated AES-256 session-key transfer. AES-GCM encrypted chat is added in Phase 6.
+Phase 6 provides the complete chat flow: direct TCP plaintext demonstration, persistent RSA-3072 identities, mutual out-of-band fingerprint verification, authenticated AES-256 session-key transfer, and AES-256-GCM encrypted messaging.
 
 ## Requirements
 
@@ -37,7 +37,7 @@ For development, use:
 npm run dev
 ```
 
-## Phase 2 demonstration
+## Network demonstration
 
 Current VMware NAT addresses:
 
@@ -58,8 +58,10 @@ If TCP port `5050` is blocked by a firewall, allow inbound TCP traffic for that 
 - Use the display filter `tcp.port == 5050`.
 - Select a packet and use **Follow → TCP Stream**.
 - The `clear_message` JSON frame must visibly contain the original `text` value.
+- After the secure session starts, a `secure_message` frame must show `AES-256-GCM`, a sequence number, Base64 ciphertext, and an authentication tag.
+- Search the followed stream for the encrypted message text and confirm it does not appear.
 
-This plaintext behavior is intentional for the assignment's pre-encryption stage. Later phases replace chat frames with AES-256-GCM ciphertext after manual identity verification and authenticated key transfer.
+The initial plaintext behavior is intentional for the assignment's pre-encryption stage. Once `SECURE_ACTIVE` is reached, the application accepts only encrypted chat frames and will not fall back to plaintext.
 
 ## Local identity and fingerprint
 
@@ -99,9 +101,15 @@ After both clients reach `IDENTITY_VERIFIED`:
 3. Confirm both clients briefly enter `SECURE_NEGOTIATING` and then reach `SECURE_ACTIVE`.
 4. Check the event logs for the connection and fingerprint binding, valid RSA-PSS signature, successful RSA-OAEP decryption, and two-way AES-GCM key-possession proofs.
 
-The AES key is never logged, sent in plaintext, or written to disk. Disconnecting erases the in-memory session key, and reconnecting requires a new verification and key-transfer flow. Plaintext chat is disabled once secure negotiation starts; encrypted chat becomes available in Phase 6.
+The AES key is never logged, sent in plaintext, or written to disk. Disconnecting erases the in-memory session key, and reconnecting requires a new verification and key-transfer flow. Plaintext chat is disabled once secure negotiation starts.
 
 In Wireshark, the `key_offer` frame visibly identifies `RSA-OAEP-SHA256` and `RSA-PSS-SHA256`, while `key_confirm` and `secure_ready` identify `AES-256-GCM`. Their encrypted fields do not reveal the AES key or confirmation payload.
+
+## Encrypted chat
+
+After both clients reach `SECURE_ACTIVE`, the chat heading and badges change to `ENCRYPTED`. Messages in both directions are protected with AES-256-GCM. The message text, UUID, and timestamp are all inside the ciphertext; only the algorithm, session binding, sender fingerprint, sequence number, ciphertext, and authentication tag remain visible on the wire.
+
+Each direction starts at sequence `1` and uses a deterministic nonce derived from the secure-session ID, sender fingerprint, and sequence. The receiver requires the next exact sequence number. A modified authentication tag or ciphertext, replayed message, out-of-order message, invalid schema, or attempted plaintext downgrade produces a red protocol-failure event, erases the in-memory AES key, and disconnects instead of reverting to plaintext.
 
 ## Configuration
 

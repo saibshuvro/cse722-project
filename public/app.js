@@ -13,6 +13,9 @@ const messageInput = document.querySelector("#message-input");
 const sendButton = document.querySelector("#send-button");
 const messageList = document.querySelector("#message-list");
 const emptyChat = document.querySelector("#empty-chat");
+const chatHeading = document.querySelector("#chat-heading");
+const chatModeBadge = document.querySelector("#chat-mode-badge");
+const captureNote = document.querySelector("#capture-note");
 const stepConnected = document.querySelector("#step-connected");
 const stepClear = document.querySelector("#step-clear");
 const identityAlgorithm = document.querySelector("#identity-algorithm");
@@ -64,7 +67,7 @@ function appendMessage(message) {
   direction.textContent = message.direction === "outgoing" ? "You" : "Peer";
 
   const security = document.createElement("span");
-  security.className = "message__security";
+  security.className = `message__security message__security--${message.security.toLowerCase()}`;
   security.textContent = message.security;
 
   const time = document.createElement("time");
@@ -152,10 +155,20 @@ function applyState(message) {
 
   messageInput.placeholder =
     message.state === "SECURE_ACTIVE"
-      ? "Encrypted chat is enabled in Phase 6…"
+      ? "Write an encrypted message…"
       : message.state === "SECURE_NEGOTIATING"
         ? "Secure session negotiation in progress…"
         : "Write a plaintext message…";
+
+  const secureActive = message.state === "SECURE_ACTIVE";
+  chatHeading.textContent = secureActive ? "Encrypted chat" : "Plaintext chat";
+  chatModeBadge.textContent = secureActive ? "ENCRYPTED" : "PLAINTEXT";
+  chatModeBadge.className = secureActive
+    ? "mode-badge mode-badge--encrypted"
+    : "mode-badge mode-badge--clear";
+  captureNote.textContent = secureActive
+    ? "Messages are AES-256-GCM encrypted; packet captures contain ciphertext, not message text."
+    : "Messages in this phase are intentionally readable in a TCP packet capture.";
 
   peerFingerprint.textContent = message.peerFingerprint ?? "Public key not received";
   localVerificationStatus.textContent = message.localFingerprintVerified
@@ -170,7 +183,6 @@ function applyState(message) {
   if (message.state === "DISCONNECTED") {
     peerFingerprint.textContent = "Public key not received";
   }
-
 }
 
 function applyIdentity(message) {

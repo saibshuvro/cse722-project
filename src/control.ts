@@ -160,7 +160,7 @@ export function attachControlSocket(
             peerService.startSecureSession();
             break;
           case "send_message":
-            peerService.sendClearMessage(result.data.text);
+            peerService.sendMessage(result.data.text);
             break;
         }
       } catch (error) {

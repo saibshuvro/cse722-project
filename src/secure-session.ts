@@ -20,6 +20,16 @@ export const SESSION_ID_BYTES = 16;
 export const GCM_AUTH_TAG_BYTES = 16;
 
 type ConfirmationFrameType = "key_confirm" | "secure_ready";
+type GcmFrameType = ConfirmationFrameType | "secure_message";
+
+interface GcmParameters {
+  readonly key: Buffer;
+  readonly frameType: GcmFrameType;
+  readonly connectionId: string;
+  readonly sessionId: string;
+  readonly senderFingerprint: string;
+  readonly sequence: number;
+}
 
 export interface ConfirmationParameters {
   readonly key: Buffer;
@@ -35,6 +45,12 @@ export interface EncryptedConfirmation {
   readonly ciphertext: string;
   readonly authTag: string;
 }
+
+export interface SecureMessageParameters extends GcmParameters {
+  readonly frameType: "secure_message";
+}
+
+export type SecureSequenceViolation = "replay" | "out_of_order" | null;
 
 export function generateSessionKey(): Buffer {
   return randomBytes(SESSION_KEY_BYTES);
@@ -166,7 +182,7 @@ export function createGcmNonce(
   return nonce;
 }
 
-function createConfirmationAad(parameters: ConfirmationParameters): Buffer {
+function createGcmAad(parameters: GcmParameters): Buffer {
   return Buffer.from(
     JSON.stringify([
       1,
@@ -178,6 +194,53 @@ function createConfirmationAad(parameters: ConfirmationParameters): Buffer {
     ]),
     "utf8",
   );
+}
+
+function encryptGcmPayload(
+  parameters: GcmParameters,
+  plaintext: Buffer,
+): EncryptedConfirmation {
+  if (parameters.key.byteLength !== SESSION_KEY_BYTES) {
+    throw new Error(`AES-256 session keys must contain ${SESSION_KEY_BYTES} bytes.`);
+  }
+  const nonce = createGcmNonce(
+    parameters.sessionId,
+    parameters.senderFingerprint,
+    parameters.sequence,
+  );
+  const cipher = createCipheriv("aes-256-gcm", parameters.key, nonce, {
+    authTagLength: GCM_AUTH_TAG_BYTES,
+  });
+  cipher.setAAD(createGcmAad(parameters));
+  const ciphertext = Buffer.concat([cipher.update(plaintext), cipher.final()]);
+  return {
+    ciphertext: ciphertext.toString("base64"),
+    authTag: cipher.getAuthTag().toString("base64"),
+  };
+}
+
+function decryptGcmPayload(
+  parameters: GcmParameters,
+  ciphertextBase64: string,
+  authTagBase64: string,
+): Buffer {
+  if (parameters.key.byteLength !== SESSION_KEY_BYTES) {
+    throw new Error(`AES-256 session keys must contain ${SESSION_KEY_BYTES} bytes.`);
+  }
+  const nonce = createGcmNonce(
+    parameters.sessionId,
+    parameters.senderFingerprint,
+    parameters.sequence,
+  );
+  const decipher = createDecipheriv("aes-256-gcm", parameters.key, nonce, {
+    authTagLength: GCM_AUTH_TAG_BYTES,
+  });
+  decipher.setAAD(createGcmAad(parameters));
+  decipher.setAuthTag(Buffer.from(authTagBase64, "base64"));
+  return Buffer.concat([
+    decipher.update(Buffer.from(ciphertextBase64, "base64")),
+    decipher.final(),
+  ]);
 }
 
 function createConfirmationPlaintext(parameters: ConfirmationParameters): Buffer {
@@ -197,26 +260,7 @@ function createConfirmationPlaintext(parameters: ConfirmationParameters): Buffer
 export function encryptKeyConfirmation(
   parameters: ConfirmationParameters,
 ): EncryptedConfirmation {
-  if (parameters.key.byteLength !== SESSION_KEY_BYTES) {
-    throw new Error(`AES-256 session keys must contain ${SESSION_KEY_BYTES} bytes.`);
-  }
-  const nonce = createGcmNonce(
-    parameters.sessionId,
-    parameters.senderFingerprint,
-    parameters.sequence,
-  );
-  const cipher = createCipheriv("aes-256-gcm", parameters.key, nonce, {
-    authTagLength: GCM_AUTH_TAG_BYTES,
-  });
-  cipher.setAAD(createConfirmationAad(parameters));
-  const ciphertext = Buffer.concat([
-    cipher.update(createConfirmationPlaintext(parameters)),
-    cipher.final(),
-  ]);
-  return {
-    ciphertext: ciphertext.toString("base64"),
-    authTag: cipher.getAuthTag().toString("base64"),
-  };
+  return encryptGcmPayload(parameters, createConfirmationPlaintext(parameters));
 }
 
 export function decryptKeyConfirmation(
@@ -224,25 +268,43 @@ export function decryptKeyConfirmation(
   ciphertextBase64: string,
   authTagBase64: string,
 ): void {
-  if (parameters.key.byteLength !== SESSION_KEY_BYTES) {
-    throw new Error(`AES-256 session keys must contain ${SESSION_KEY_BYTES} bytes.`);
-  }
-  const nonce = createGcmNonce(
-    parameters.sessionId,
-    parameters.senderFingerprint,
-    parameters.sequence,
-  );
-  const decipher = createDecipheriv("aes-256-gcm", parameters.key, nonce, {
-    authTagLength: GCM_AUTH_TAG_BYTES,
-  });
-  decipher.setAAD(createConfirmationAad(parameters));
-  decipher.setAuthTag(Buffer.from(authTagBase64, "base64"));
-  const plaintext = Buffer.concat([
-    decipher.update(Buffer.from(ciphertextBase64, "base64")),
-    decipher.final(),
-  ]);
+  const plaintext = decryptGcmPayload(parameters, ciphertextBase64, authTagBase64);
   const expected = createConfirmationPlaintext(parameters);
   if (plaintext.byteLength !== expected.byteLength || !timingSafeEqual(plaintext, expected)) {
     throw new Error("Secure-session confirmation payload is invalid.");
   }
+}
+
+export function encryptSecureMessage(
+  parameters: SecureMessageParameters,
+  plaintext: Buffer,
+): EncryptedConfirmation {
+  if (parameters.sequence < 1) {
+    throw new Error("Encrypted chat message sequences must start at 1.");
+  }
+  return encryptGcmPayload(parameters, plaintext);
+}
+
+export function decryptSecureMessage(
+  parameters: SecureMessageParameters,
+  ciphertextBase64: string,
+  authTagBase64: string,
+): Buffer {
+  if (parameters.sequence < 1) {
+    throw new Error("Encrypted chat message sequences must start at 1.");
+  }
+  return decryptGcmPayload(parameters, ciphertextBase64, authTagBase64);
+}
+
+export function classifySecureSequence(
+  receivedSequence: number,
+  expectedSequence: number,
+): SecureSequenceViolation {
+  if (receivedSequence < expectedSequence) {
+    return "replay";
+  }
+  if (receivedSequence > expectedSequence) {
+    return "out_of_order";
+  }
+  return null;
 }

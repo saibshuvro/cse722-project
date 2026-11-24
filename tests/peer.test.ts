@@ -251,9 +251,25 @@ describe("PeerService", () => {
           secondSecure,
         ]);
 
-        expect(firstSecureFinal.permittedActions).not.toContain("send_message");
-        expect(secondSecureFinal.permittedActions).not.toContain("send_message");
+        expect(firstSecureFinal.permittedActions).toContain("send_message");
+        expect(secondSecureFinal.permittedActions).toContain("send_message");
         expect(() => first.sendClearMessage("plaintext downgrade")).toThrow(/Plaintext/);
+
+        const secondReceivesEncrypted = waitForIncomingMessage(second);
+        first.sendMessage("encrypted hello from first");
+        await expect(secondReceivesEncrypted).resolves.toMatchObject({
+          direction: "incoming",
+          security: "ENCRYPTED",
+          text: "encrypted hello from first",
+        });
+
+        const firstReceivesEncrypted = waitForIncomingMessage(first);
+        second.sendMessage("encrypted reply from second");
+        await expect(firstReceivesEncrypted).resolves.toMatchObject({
+          direction: "incoming",
+          security: "ENCRYPTED",
+          text: "encrypted reply from second",
+        });
         expect(secondSecurityEvents).toEqual(
           expect.arrayContaining([
             expect.stringContaining("Key offer is bound"),

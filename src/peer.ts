@@ -5,7 +5,9 @@ import { createServer, isIP, type Server as TcpServer, Socket } from "node:net";
 import type { AppConfig } from "./config.js";
 import { importIdentityPublicKey, type LocalIdentity } from "./identity.js";
 import {
+  decodeSecureMessagePayload,
   encodeFrame,
+  encodeSecureMessagePayload,
   FrameDecodeError,
   MAX_MESSAGE_BYTES,
   NdjsonFrameDecoder,
@@ -21,10 +23,14 @@ import {
   type PeerFrame,
   type ProtocolErrorCode,
   type SecureReadyFrame,
+  type SecureMessageFrame,
 } from "./protocol.js";
 import {
+  classifySecureSequence,
   decryptKeyConfirmation,
+  decryptSecureMessage,
   encryptKeyConfirmation,
+  encryptSecureMessage,
   generateSecureSessionId,
   generateSessionKey,
   KEY_OFFER_SIGNATURE_ALGORITHM,
@@ -80,7 +86,7 @@ export interface StateSnapshot {
 export interface ChatMessageEvent {
   readonly type: "chat_message";
   readonly direction: "incoming" | "outgoing";
-  readonly security: "PLAINTEXT";
+  readonly security: "PLAINTEXT" | "ENCRYPTED";
   readonly messageId: string;
   readonly timestamp: string;
   readonly text: string;
@@ -100,6 +106,8 @@ interface SecureContext {
   readonly key: Buffer;
   readonly role: "initiator" | "recipient";
   stage: "WAITING_FOR_CONFIRM" | "WAITING_FOR_READY" | "ACTIVE";
+  nextSendSequence: number;
+  nextReceiveSequence: number;
 }
 
 interface PeerSession {
@@ -139,6 +147,17 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : "Unknown networking error.";
 }
 
+function normalizeMessageText(input: string): string {
+  const text = input.trim();
+  if (text.length === 0) {
+    throw new Error("Message cannot be empty.");
+  }
+  if (Buffer.byteLength(text, "utf8") > MAX_MESSAGE_BYTES) {
+    throw new Error(`Message must not exceed ${MAX_MESSAGE_BYTES} UTF-8 bytes.`);
+  }
+  return text;
+}
+
 export class PeerService extends EventEmitter {
   private readonly installationId: string;
   private readonly identity: LocalIdentity | null;
@@ -173,6 +192,7 @@ export class PeerService extends EventEmitter {
           "CLEAR_EXCHANGED",
           "KEYS_UNVERIFIED",
           "IDENTITY_VERIFIED",
+          "SECURE_ACTIVE",
         ].includes(state)
       ) {
         permittedActions.push("send_message");
@@ -335,13 +355,7 @@ export class PeerService extends EventEmitter {
     if (session.secure) {
       throw new Error("Plaintext messaging is disabled after secure negotiation starts.");
     }
-    const text = input.trim();
-    if (text.length === 0) {
-      throw new Error("Message cannot be empty.");
-    }
-    if (Buffer.byteLength(text, "utf8") > MAX_MESSAGE_BYTES) {
-      throw new Error(`Message must not exceed ${MAX_MESSAGE_BYTES} UTF-8 bytes.`);
-    }
+    const text = normalizeMessageText(input);
 
     const frame: ClearMessageFrame = {
       v: PROTOCOL_VERSION,
@@ -363,6 +377,84 @@ export class PeerService extends EventEmitter {
     });
     this.updateClearExchangeState(session);
     this.emitState();
+  }
+
+  sendMessage(input: string): void {
+    if (this.getState() === "SECURE_ACTIVE") {
+      this.sendSecureMessage(input);
+      return;
+    }
+    this.sendClearMessage(input);
+  }
+
+  private sendSecureMessage(input: string): void {
+    const session = this.requireReadySession();
+    const identity = this.requireIdentity();
+    const secure = session.secure;
+    if (
+      !secure ||
+      secure.stage !== "ACTIVE" ||
+      !session.peerFingerprint
+    ) {
+      throw new Error("Complete secure-session negotiation before sending encrypted messages.");
+    }
+    if (secure.nextSendSequence >= Number.MAX_SAFE_INTEGER) {
+      this.endSession(
+        session,
+        "Secure-message sequence exhausted; reconnect required.",
+        true,
+        false,
+      );
+      throw new Error("Secure-message sequence exhausted; reconnect required.");
+    }
+
+    const text = normalizeMessageText(input);
+    const payload = {
+      v: PROTOCOL_VERSION,
+      type: "secure_message_payload" as const,
+      messageId: randomUUID(),
+      sentAt: new Date().toISOString(),
+      text,
+    };
+    const sequence = secure.nextSendSequence;
+    let encrypted: ReturnType<typeof encryptSecureMessage>;
+    try {
+      encrypted = encryptSecureMessage(
+        {
+          key: secure.key,
+          frameType: "secure_message",
+          connectionId: session.connectionId,
+          sessionId: secure.sessionId,
+          senderFingerprint: identity.fingerprint,
+          sequence,
+        },
+        encodeSecureMessagePayload(payload),
+      );
+    } catch {
+      this.endSession(session, "Secure-message encryption failed; session key erased.", true, false);
+      throw new Error("Unable to encrypt the message; the secure session was closed.");
+    }
+
+    this.writeFrame(session, {
+      v: PROTOCOL_VERSION,
+      type: "secure_message",
+      connectionId: session.connectionId,
+      sessionId: secure.sessionId,
+      senderFingerprint: identity.fingerprint,
+      algorithm: SESSION_CIPHER_ALGORITHM,
+      sequence,
+      ciphertext: encrypted.ciphertext,
+      authTag: encrypted.authTag,
+    });
+    secure.nextSendSequence += 1;
+    this.emitChat({
+      type: "chat_message",
+      direction: "outgoing",
+      security: "ENCRYPTED",
+      messageId: payload.messageId,
+      timestamp: payload.sentAt,
+      text: payload.text,
+    });
   }
 
   exchangeIdentityKeys(): void {
@@ -454,6 +546,8 @@ export class PeerService extends EventEmitter {
         key,
         role: "initiator",
         stage: "WAITING_FOR_CONFIRM",
+        nextSendSequence: 1,
+        nextReceiveSequence: 1,
       };
       this.writeFrame(session, {
         v: PROTOCOL_VERSION,
@@ -662,6 +756,9 @@ export class PeerService extends EventEmitter {
         break;
       case "secure_ready":
         this.acceptSecureReady(session, frame);
+        break;
+      case "secure_message":
+        this.acceptSecureMessage(session, frame);
         break;
       case "goodbye":
         this.emitSecurity("info", `Peer disconnected: ${frame.reason}`);
@@ -963,6 +1060,8 @@ export class PeerService extends EventEmitter {
       key,
       role: "recipient",
       stage: "WAITING_FOR_READY",
+      nextSendSequence: 1,
+      nextReceiveSequence: 1,
     };
     this.emitSecurity(
       "success",
@@ -1132,6 +1231,85 @@ export class PeerService extends EventEmitter {
     );
     this.emitSecurity("success", "Secure session is active.");
     this.emitState();
+  }
+
+  private acceptSecureMessage(session: PeerSession, frame: SecureMessageFrame): void {
+    const identity = this.requireIdentityForProtocol(session);
+    if (!identity) {
+      return;
+    }
+    const secure = session.secure;
+    if (!secure || secure.stage !== "ACTIVE") {
+      this.failProtocol(
+        session,
+        "unexpected_frame",
+        "Received an encrypted message before the secure session became active.",
+      );
+      return;
+    }
+    if (
+      !session.peerFingerprint ||
+      frame.sessionId !== secure.sessionId ||
+      frame.senderFingerprint !== session.peerFingerprint
+    ) {
+      this.failProtocol(
+        session,
+        "invalid_frame",
+        "Encrypted message is bound to a different secure session or identity.",
+      );
+      return;
+    }
+
+    const sequenceViolation = classifySecureSequence(
+      frame.sequence,
+      secure.nextReceiveSequence,
+    );
+    if (sequenceViolation === "replay") {
+      this.failProtocol(session, "invalid_frame", "Replayed encrypted message rejected.");
+      return;
+    }
+    if (sequenceViolation === "out_of_order") {
+      this.failProtocol(session, "invalid_frame", "Out-of-order encrypted message rejected.");
+      return;
+    }
+
+    let payload: ReturnType<typeof decodeSecureMessagePayload>;
+    try {
+      const plaintext = decryptSecureMessage(
+        {
+          key: secure.key,
+          frameType: "secure_message",
+          connectionId: session.connectionId,
+          sessionId: secure.sessionId,
+          senderFingerprint: session.peerFingerprint,
+          sequence: frame.sequence,
+        },
+        frame.ciphertext,
+        frame.authTag,
+      );
+      payload = decodeSecureMessagePayload(plaintext);
+    } catch {
+      this.failProtocol(
+        session,
+        "invalid_frame",
+        "Encrypted message authentication or payload validation failed.",
+      );
+      return;
+    }
+
+    secure.nextReceiveSequence += 1;
+    this.emitChat({
+      type: "chat_message",
+      direction: "incoming",
+      security: "ENCRYPTED",
+      messageId: payload.messageId,
+      timestamp: payload.sentAt,
+      text: payload.text,
+    });
+    this.emitSecurity(
+      "success",
+      `AES-GCM message sequence ${frame.sequence} authenticated successfully.`,
+    );
   }
 
   private sendIdentityKey(

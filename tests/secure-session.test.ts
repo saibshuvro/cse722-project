@@ -2,9 +2,18 @@ import { generateKeyPairSync, randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 
 import {
+  encodeFrame,
+  encodeSecureMessagePayload,
+  PROTOCOL_VERSION,
+  type SecureMessageFrame,
+} from "../src/protocol.js";
+import {
+  classifySecureSequence,
   createGcmNonce,
   decryptKeyConfirmation,
+  decryptSecureMessage,
   encryptKeyConfirmation,
+  encryptSecureMessage,
   generateSecureSessionId,
   generateSessionKey,
   signKeyOffer,
@@ -121,5 +130,71 @@ describe("secure-session cryptography", () => {
         createGcmNonce(parameters.sessionId, SECOND_FINGERPRINT, 0),
       ),
     ).toBe(false);
+  });
+
+  it("encrypts complete chat payloads without exposing message text in the frame", () => {
+    const key = generateSessionKey();
+    const connectionId = randomUUID();
+    const sessionId = generateSecureSessionId();
+    const sequence = 1;
+    const secretText = "this message must not appear in Wireshark";
+    const parameters = {
+      key,
+      frameType: "secure_message" as const,
+      connectionId,
+      sessionId,
+      senderFingerprint: FIRST_FINGERPRINT,
+      sequence,
+    };
+    const plaintext = encodeSecureMessagePayload({
+      v: PROTOCOL_VERSION,
+      type: "secure_message_payload",
+      messageId: randomUUID(),
+      sentAt: new Date().toISOString(),
+      text: secretText,
+    });
+    const encrypted = encryptSecureMessage(parameters, plaintext);
+    const frame: SecureMessageFrame = {
+      v: PROTOCOL_VERSION,
+      type: "secure_message",
+      connectionId,
+      sessionId,
+      senderFingerprint: FIRST_FINGERPRINT,
+      algorithm: "AES-256-GCM",
+      sequence,
+      ciphertext: encrypted.ciphertext,
+      authTag: encrypted.authTag,
+    };
+    const encodedFrame = encodeFrame(frame).toString("utf8");
+
+    expect(encodedFrame).toContain('"algorithm":"AES-256-GCM"');
+    expect(encodedFrame).toContain('"ciphertext"');
+    expect(encodedFrame).not.toContain(secretText);
+    expect(
+      decryptSecureMessage(parameters, encrypted.ciphertext, encrypted.authTag),
+    ).toEqual(plaintext);
+
+    const tamperedCiphertext = Buffer.from(encrypted.ciphertext, "base64");
+    tamperedCiphertext[0] ^= 0x01;
+    expect(() =>
+      decryptSecureMessage(
+        parameters,
+        tamperedCiphertext.toString("base64"),
+        encrypted.authTag,
+      ),
+    ).toThrow();
+    expect(() =>
+      decryptSecureMessage(
+        { ...parameters, sequence: 2 },
+        encrypted.ciphertext,
+        encrypted.authTag,
+      ),
+    ).toThrow();
+  });
+
+  it("classifies replayed and out-of-order secure-message sequences", () => {
+    expect(classifySecureSequence(4, 5)).toBe("replay");
+    expect(classifySecureSequence(6, 5)).toBe("out_of_order");
+    expect(classifySecureSequence(5, 5)).toBeNull();
   });
 });
