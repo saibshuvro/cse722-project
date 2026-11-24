@@ -1,0 +1,12 @@
+node_modules/
+dist/
+coverage/
+*.log
+.env
+.env.*
+!.env.example
+.cse722-chat/
+test-results/
+.agents/
+.codex/
+.aws/

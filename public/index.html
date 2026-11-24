@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="CSE722 encrypted two-peer chat demonstration" />
+    <title>CSE722 Encrypted Chat</title>
+    <link rel="stylesheet" href="/styles.css" />
+    <script src="/app.js" defer></script>
+  </head>
+  <body>
+    <main class="app-shell">
+      <header class="page-header">
+        <div>
+          <p class="eyebrow">CSE722 · Project 1</p>
+          <h1>Encrypted Chat</h1>
+          <p class="subtitle">Direct peer-to-peer chat with visible security stages.</p>
+        </div>
+        <span id="backend-status" class="status status--pending">Connecting locally…</span>
+      </header>
+
+      <section class="panel" aria-labelledby="foundation-heading">
+        <div class="panel__heading">
+          <div>
+            <p class="step-label">Implementation status</p>
+            <h2 id="foundation-heading">Phase 1 foundation</h2>
+          </div>
+          <span class="phase-badge">DISCONNECTED</span>
+        </div>
+
+        <dl class="runtime-grid">
+          <div>
+            <dt>Local GUI</dt>
+            <dd id="web-address">Loading…</dd>
+          </div>
+          <div>
+            <dt>Peer TCP listener</dt>
+            <dd id="chat-address">Loading…</dd>
+          </div>
+          <div>
+            <dt>Protocol version</dt>
+            <dd id="protocol-version">Loading…</dd>
+          </div>
+        </dl>
+
+        <p class="notice">
+          The local interface and control channel are ready. Direct TCP chat is added in Phase 2.
+        </p>
+      </section>
+
+      <section class="panel" aria-labelledby="events-heading">
+        <div class="panel__heading">
+          <div>
+            <p class="step-label">Local diagnostics</p>
+            <h2 id="events-heading">Event log</h2>
+          </div>
+        </div>
+        <ol id="event-log" class="event-log" aria-live="polite"></ol>
+      </section>
+    </main>
+  </body>
+</html>

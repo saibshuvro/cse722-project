@@ -188,9 +188,72 @@ Backend events:
 
 Validate IPv4 input, trim messages, reject empty messages, and limit chat content to 2,000 UTF-8 bytes.
 
-## 4. Implementation and Deliverables
+## 4. Implementation Phases
 
-- Initialize a Git and npm TypeScript project while preserving the supplied PDF locally and excluding it from Git.
+### Phase 1 — Project foundation
+
+- Configure the existing repository as an npm/TypeScript project.
+- Add Express, WebSocket, Zod, Vitest, and TypeScript tooling.
+- Create environment-based port and data-directory configuration.
+- Add the minimal static GUI, local control WebSocket, and health endpoint.
+- Add build, start, development, type-check, and test scripts.
+
+**Completion gate:** The project installs, type-checks, tests, builds, starts, and opens at `http://localhost:3000`.
+
+### Phase 2 — TCP connection and plaintext chat
+
+- Add the TCP listener, peer-IP connection, disconnect behavior, and protocol greeting.
+- Implement validated NDJSON framing and plaintext messaging.
+- Display incoming and outgoing messages with `PLAINTEXT` badges and connection events.
+
+**Completion gate:** Ubuntu and Kali exchange plaintext messages in both directions and the message text is visible in Wireshark.
+
+### Phase 3 — Persistent identity
+
+- Generate, validate, and persist the RSA-3072 identity and installation ID.
+- Derive and display the SHA-256 public-key fingerprint.
+- Test key permissions, persistence, corruption handling, and stable fingerprints.
+
+**Completion gate:** Each machine has a different fingerprint that remains unchanged after restart.
+
+### Phase 4 — Public-key exchange and verification
+
+- Implement public-key request/response frames and the **Exchange Public Keys** button.
+- Display the computed peer fingerprint and add accept/reject controls.
+- Exchange signed verification notices and require confirmation by both users.
+
+**Completion gate:** Both clients reach `IDENTITY_VERIFIED`; rejected or invalid fingerprints terminate the session safely.
+
+### Phase 5 — Authenticated AES-key transfer
+
+- Add the **Start Secure Session** button and generate a fresh AES-256 key.
+- Wrap the key with RSA-OAEP, sign the envelope with RSA-PSS, and verify both operations.
+- Complete AES-GCM `key_confirm` / `secure_ready` key-possession confirmation.
+
+**Completion gate:** Both clients reach `SECURE_ACTIVE` and the event log shows each authenticity check.
+
+### Phase 6 — Encrypted chat and defensive behavior
+
+- Implement AES-256-GCM messages, deterministic nonces, authenticated metadata, and sequences.
+- Add `ENCRYPTED` badges and capture-visible algorithm/ciphertext fields.
+- Reject tampering, replay, invalid ordering, and attempted plaintext downgrade.
+
+**Completion gate:** Encrypted messages work in both directions, while Wireshark cannot find the original message text.
+
+### Phase 7 — Integration and demonstration readiness
+
+- Complete two-process integration, restart, malformed-frame, duplicate-connection, and busy-peer tests.
+- Run the full Ubuntu/Kali workflow and finish installation and troubleshooting documentation.
+- Capture the required plaintext and encrypted Wireshark evidence.
+
+**Completion gate:** A clean clone can be installed and demonstrated by following the README, and all automated checks pass.
+
+Tests should be implemented alongside each phase rather than deferred to Phase 7.
+
+## 5. Implementation and Deliverables
+
+- Use the existing Git repository and configured GitHub remote; do not replace or reinitialize them.
+- Configure the repository as an npm TypeScript project while preserving the already tracked assignment PDF.
 - Organize backend code under `src/`, static GUI assets under `public/`, and automated tests under `tests/`.
 - Provide scripts for `dev`, `build`, `start`, `typecheck`, and `test`; commit `package-lock.json`.
 - Support configuration through:
@@ -199,13 +262,13 @@ Validate IPv4 input, trim messages, reject empty messages, and limit chat conten
   - `CHAT_BIND_ADDRESS`, default `0.0.0.0`
   - `DATA_DIR`, default `~/.local/share/cse722-chat`
 - Never log private keys, AES keys, decrypted key offers, decrypted secure messages in the security log, or authentication tags.
-- Add `.gitignore` coverage for dependencies, builds, logs, local key material, test artifacts, and the assignment PDF.
+- Add `.gitignore` coverage for dependencies, builds, logs, local key material, and test artifacts.
 - Add a README containing Ubuntu/Kali prerequisites, Kali Node.js installation, installation/build/run commands, firewall troubleshooting, first-launch key behavior, and the complete two-machine demonstration sequence.
-- Do not configure a GitHub remote or publish the repository until repository details are provided.
+- Do not push changes unless the user explicitly requests it.
 
-## 5. Test and Acceptance Plan
+## 6. Test and Acceptance Plan
 
-### 5.1 Automated tests
+### 6.1 Automated tests
 
 Test the following:
 
@@ -220,7 +283,7 @@ Test the following:
 - Duplicate/simultaneous connection resolution and busy rejection for a third client.
 - `npm run typecheck`, `npm test`, and `npm run build` must all pass.
 
-### 5.2 Manual Ubuntu/Kali acceptance
+### 6.2 Manual Ubuntu/Kali acceptance
 
 1. Confirm both applications display different persistent identity fingerprints.
 2. Confirm either machine can initiate the TCP connection.
@@ -235,7 +298,7 @@ Test the following:
 
 Only one Wireshark capture location is required for the report. Because Wireshark is already installed on Kali, capturing `eth0` there is sufficient; Ubuntu capture support remains optional.
 
-## 6. Assumptions and Defaults
+## 7. Assumptions and Defaults
 
 - Ubuntu and Kali remain reachable through VMware NAT at their current addresses; DHCP addresses will be rechecked before demonstrations.
 - Node.js 22 or newer will be installed on Kali before implementation testing.
