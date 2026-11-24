@@ -85,6 +85,36 @@ export function fingerprintPublicKey(publicKey: KeyObject): string {
   return digest.match(/.{2}/g)?.join(":") ?? digest;
 }
 
+export function importIdentityPublicKey(publicKeyPem: string): {
+  readonly publicKey: KeyObject;
+  readonly fingerprint: string;
+} {
+  if (!publicKeyPem.trimStart().startsWith("-----BEGIN PUBLIC KEY-----")) {
+    throw new IdentityStoreError("Peer identity must be an SPKI public key.");
+  }
+
+  let publicKey: KeyObject;
+  try {
+    publicKey = createPublicKey(publicKeyPem);
+  } catch (error) {
+    throw new IdentityStoreError("Peer identity contains an invalid public key.", {
+      cause: error,
+    });
+  }
+
+  if (
+    publicKey.asymmetricKeyType !== "rsa" ||
+    publicKey.asymmetricKeyDetails?.modulusLength !== 3_072
+  ) {
+    throw new IdentityStoreError("Peer identity must use an RSA-3072 public key.");
+  }
+
+  return {
+    publicKey,
+    fingerprint: fingerprintPublicKey(publicKey),
+  };
+}
+
 function generateIdentityKeyPair(): Promise<{
   readonly publicKeyPem: string;
   readonly privateKeyPem: string;
@@ -168,19 +198,18 @@ function validateKeyPair(privateKeyPem: string, publicKeyPem: string): {
   let publicKey: KeyObject;
   try {
     privateKey = createPrivateKey(privateKeyPem);
-    publicKey = createPublicKey(publicKeyPem);
+    publicKey = importIdentityPublicKey(publicKeyPem).publicKey;
   } catch (error) {
     throw new IdentityStoreError("Stored identity contains an invalid PEM key.", {
       cause: error,
     });
   }
 
-  if (privateKey.asymmetricKeyType !== "rsa" || publicKey.asymmetricKeyType !== "rsa") {
+  if (privateKey.asymmetricKeyType !== "rsa") {
     throw new IdentityStoreError("Stored identity must contain RSA keys.");
   }
   if (
-    privateKey.asymmetricKeyDetails?.modulusLength !== 3_072 ||
-    publicKey.asymmetricKeyDetails?.modulusLength !== 3_072
+    privateKey.asymmetricKeyDetails?.modulusLength !== 3_072
   ) {
     throw new IdentityStoreError("Stored identity must use RSA-3072 keys.");
   }

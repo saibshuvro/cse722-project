@@ -1,6 +1,10 @@
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import type { AppConfig } from "../src/config.js";
+import { loadOrCreateIdentity } from "../src/identity.js";
 import {
   PeerService,
   type ChatMessageEvent,
@@ -30,6 +34,31 @@ function waitForState(service: PeerService, target: PeerState): Promise<StateSna
     }, 3_000);
     const unsubscribe = service.onState((snapshot) => {
       if (snapshot.state === target) {
+        clearTimeout(timeout);
+        unsubscribe();
+        resolve(snapshot);
+      }
+    });
+  });
+}
+
+function waitForSnapshot(
+  service: PeerService,
+  predicate: (snapshot: StateSnapshot) => boolean,
+  description: string,
+): Promise<StateSnapshot> {
+  const current = service.getSnapshot();
+  if (predicate(current)) {
+    return Promise.resolve(current);
+  }
+
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      unsubscribe();
+      reject(new Error(`Timed out waiting for ${description}.`));
+    }, 5_000);
+    const unsubscribe = service.onState((snapshot) => {
+      if (predicate(snapshot)) {
         clearTimeout(timeout);
         unsubscribe();
         resolve(snapshot);
@@ -141,4 +170,75 @@ describe("PeerService", () => {
       await Promise.all([first.stop(), second.stop(), third.stop()]);
     }
   });
+
+  it(
+    "exchanges identity keys and requires signed verification from both peers",
+    async () => {
+      const firstDirectory = await mkdtemp(join(tmpdir(), "cse722-peer-first-"));
+      const secondDirectory = await mkdtemp(join(tmpdir(), "cse722-peer-second-"));
+      const [firstIdentity, secondIdentity] = await Promise.all([
+        loadOrCreateIdentity(firstDirectory),
+        loadOrCreateIdentity(secondDirectory),
+      ]);
+      const first = new PeerService(testConfig(), firstIdentity.identity);
+      const second = new PeerService(testConfig(), secondIdentity.identity);
+
+      try {
+        await Promise.all([first.start(), second.start()]);
+        const firstConnected = waitForState(first, "CONNECTED_CLEAR");
+        const secondConnected = waitForState(second, "CONNECTED_CLEAR");
+        first.connect("127.0.0.1", second.listeningPort);
+        await Promise.all([firstConnected, secondConnected]);
+
+        first.sendClearMessage("identity test hello");
+        await waitForIncomingMessage(second);
+        const firstClear = waitForState(first, "CLEAR_EXCHANGED");
+        const secondClear = waitForState(second, "CLEAR_EXCHANGED");
+        second.sendClearMessage("identity test reply");
+        await Promise.all([firstClear, secondClear]);
+
+        const firstHasPeerKey = waitForSnapshot(
+          first,
+          (snapshot) =>
+            snapshot.state === "KEYS_UNVERIFIED" && snapshot.peerFingerprint !== null,
+          "the first peer identity key",
+        );
+        const secondHasPeerKey = waitForSnapshot(
+          second,
+          (snapshot) =>
+            snapshot.state === "KEYS_UNVERIFIED" && snapshot.peerFingerprint !== null,
+          "the second peer identity key",
+        );
+        first.exchangeIdentityKeys();
+
+        const [firstUnverified, secondUnverified] = await Promise.all([
+          firstHasPeerKey,
+          secondHasPeerKey,
+        ]);
+        expect(firstUnverified.peerFingerprint).toBe(secondIdentity.identity.fingerprint);
+        expect(secondUnverified.peerFingerprint).toBe(firstIdentity.identity.fingerprint);
+
+        const firstVerified = waitForState(first, "IDENTITY_VERIFIED");
+        const secondVerified = waitForState(second, "IDENTITY_VERIFIED");
+        first.verifyPeerFingerprint("accept");
+        second.verifyPeerFingerprint("accept");
+        const [firstFinal, secondFinal] = await Promise.all([
+          firstVerified,
+          secondVerified,
+        ]);
+
+        expect(firstFinal.localFingerprintVerified).toBe(true);
+        expect(firstFinal.peerVerifiedLocalFingerprint).toBe(true);
+        expect(secondFinal.localFingerprintVerified).toBe(true);
+        expect(secondFinal.peerVerifiedLocalFingerprint).toBe(true);
+      } finally {
+        await Promise.all([first.stop(), second.stop()]);
+        await Promise.all([
+          rm(firstDirectory, { recursive: true, force: true }),
+          rm(secondDirectory, { recursive: true, force: true }),
+        ]);
+      }
+    },
+    20_000,
+  );
 });

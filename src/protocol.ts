@@ -12,6 +12,12 @@ const messageTextSchema = z
   .refine((value) => Buffer.byteLength(value, "utf8") <= MAX_MESSAGE_BYTES, {
     message: `Message must not exceed ${MAX_MESSAGE_BYTES} UTF-8 bytes.`,
   });
+const fingerprintSchema = z.string().regex(/^([0-9A-F]{2}:){31}[0-9A-F]{2}$/);
+const signatureSchema = z
+  .string()
+  .min(1)
+  .max(1_024)
+  .regex(/^[A-Za-z0-9+/]+={0,2}$/);
 
 const helloSchema = z
   .object({
@@ -44,6 +50,38 @@ const clearMessageSchema = z
   })
   .strict();
 
+const identityRequestSchema = z
+  .object({
+    v: z.literal(PROTOCOL_VERSION),
+    type: z.literal("identity_request"),
+    connectionId: uuidSchema,
+    requestId: uuidSchema,
+  })
+  .strict();
+
+const identityKeySchema = z
+  .object({
+    v: z.literal(PROTOCOL_VERSION),
+    type: z.literal("identity_key"),
+    connectionId: uuidSchema,
+    requestId: uuidSchema,
+    algorithm: z.literal("RSA-3072"),
+    publicKeyPem: z.string().min(1).max(8_192),
+  })
+  .strict();
+
+const fingerprintVerifiedSchema = z
+  .object({
+    v: z.literal(PROTOCOL_VERSION),
+    type: z.literal("fingerprint_verified"),
+    connectionId: uuidSchema,
+    senderFingerprint: fingerprintSchema,
+    recipientFingerprint: fingerprintSchema,
+    signatureAlgorithm: z.literal("RSA-PSS-SHA256"),
+    signature: signatureSchema,
+  })
+  .strict();
+
 const protocolErrorSchema = z
   .object({
     v: z.literal(PROTOCOL_VERSION),
@@ -73,6 +111,9 @@ export const peerFrameSchema = z.discriminatedUnion("type", [
   helloSchema,
   helloAckSchema,
   clearMessageSchema,
+  identityRequestSchema,
+  identityKeySchema,
+  fingerprintVerifiedSchema,
   protocolErrorSchema,
   goodbyeSchema,
 ]);
@@ -81,6 +122,9 @@ export type PeerFrame = z.infer<typeof peerFrameSchema>;
 export type HelloFrame = z.infer<typeof helloSchema>;
 export type HelloAckFrame = z.infer<typeof helloAckSchema>;
 export type ClearMessageFrame = z.infer<typeof clearMessageSchema>;
+export type IdentityRequestFrame = z.infer<typeof identityRequestSchema>;
+export type IdentityKeyFrame = z.infer<typeof identityKeySchema>;
+export type FingerprintVerifiedFrame = z.infer<typeof fingerprintVerifiedSchema>;
 export type ProtocolErrorFrame = z.infer<typeof protocolErrorSchema>;
 export type ProtocolErrorCode = ProtocolErrorFrame["code"];
 

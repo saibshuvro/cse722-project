@@ -1,4 +1,5 @@
 import { mkdir, rm, stat, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -8,6 +9,10 @@ import {
   IdentityStoreError,
   loadOrCreateIdentity,
 } from "../src/identity.js";
+import {
+  signFingerprintVerification,
+  verifyFingerprintVerification,
+} from "../src/verification.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -61,6 +66,33 @@ describe("local identity store", () => {
       expect(second.identity.installationId).toBe(first.identity.installationId);
       expect(second.identity.fingerprint).toBe(first.identity.fingerprint);
       expect(second.identity.publicKeyPem).toBe(first.identity.publicKeyPem);
+
+      const connectionId = randomUUID();
+      const peerFingerprint = "AA:".repeat(31) + "AA";
+      const signature = signFingerprintVerification(
+        first.identity.privateKey,
+        connectionId,
+        first.identity.fingerprint,
+        peerFingerprint,
+      );
+      expect(
+        verifyFingerprintVerification(
+          first.identity.publicKey,
+          connectionId,
+          first.identity.fingerprint,
+          peerFingerprint,
+          signature,
+        ),
+      ).toBe(true);
+      expect(
+        verifyFingerprintVerification(
+          first.identity.publicKey,
+          connectionId,
+          first.identity.fingerprint,
+          "BB:".repeat(31) + "BB",
+          signature,
+        ),
+      ).toBe(false);
 
       await writeFile(paths.publicKey, "not a public key", "utf8");
       await expect(loadOrCreateIdentity(dataDir)).rejects.toThrow(IdentityStoreError);

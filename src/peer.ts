@@ -1,8 +1,9 @@
-import { randomUUID } from "node:crypto";
+import { randomUUID, type KeyObject } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { createServer, isIP, type Server as TcpServer, Socket } from "node:net";
 
 import type { AppConfig } from "./config.js";
+import { importIdentityPublicKey, type LocalIdentity } from "./identity.js";
 import {
   encodeFrame,
   FrameDecodeError,
@@ -10,17 +11,35 @@ import {
   NdjsonFrameDecoder,
   PROTOCOL_VERSION,
   type ClearMessageFrame,
+  type FingerprintVerifiedFrame,
   type HelloAckFrame,
   type HelloFrame,
+  type IdentityKeyFrame,
+  type IdentityRequestFrame,
   type PeerFrame,
   type ProtocolErrorCode,
 } from "./protocol.js";
+import {
+  signFingerprintVerification,
+  VERIFICATION_SIGNATURE_ALGORITHM,
+  verifyFingerprintVerification,
+} from "./verification.js";
 
 export type PeerState =
   | "DISCONNECTED"
   | "CONNECTING"
   | "CONNECTED_CLEAR"
-  | "CLEAR_EXCHANGED";
+  | "CLEAR_EXCHANGED"
+  | "KEYS_UNVERIFIED"
+  | "IDENTITY_VERIFIED";
+
+export type PeerAction =
+  | "connect"
+  | "disconnect"
+  | "send_message"
+  | "exchange_keys"
+  | "verify_fingerprint"
+  | "reject_fingerprint";
 
 export type SecuritySeverity = "info" | "success" | "warning" | "error";
 
@@ -33,7 +52,10 @@ export interface StateSnapshot {
   readonly chatBindAddress: string;
   readonly sentClearMessage: boolean;
   readonly receivedClearMessage: boolean;
-  readonly permittedActions: readonly ("connect" | "disconnect" | "send_message")[];
+  readonly peerFingerprint: string | null;
+  readonly localFingerprintVerified: boolean;
+  readonly peerVerifiedLocalFingerprint: boolean;
+  readonly permittedActions: readonly PeerAction[];
 }
 
 export interface ChatMessageEvent {
@@ -66,6 +88,14 @@ interface PeerSession {
   sentClearMessage: boolean;
   receivedClearMessage: boolean;
   clearExchangeAnnounced: boolean;
+  identityExchangeStarted: boolean;
+  identityRequestId: string | null;
+  localIdentitySent: boolean;
+  peerPublicKey: KeyObject | null;
+  peerPublicKeyPem: string | null;
+  peerFingerprint: string | null;
+  localFingerprintVerified: boolean;
+  peerVerifiedLocalFingerprint: boolean;
   handshakeTimer: NodeJS.Timeout | null;
 }
 
@@ -84,16 +114,18 @@ function errorMessage(error: unknown): string {
 
 export class PeerService extends EventEmitter {
   private readonly installationId: string;
+  private readonly identity: LocalIdentity | null;
   private readonly config: AppConfig;
   private readonly inboundSockets = new Set<Socket>();
   private server: TcpServer | null = null;
   private session: PeerSession | null = null;
   private boundChatPort: number;
 
-  constructor(config: AppConfig, installationId: string = randomUUID()) {
+  constructor(config: AppConfig, identity: LocalIdentity | null = null) {
     super();
     this.config = config;
-    this.installationId = installationId;
+    this.identity = identity;
+    this.installationId = identity?.installationId ?? randomUUID();
     this.boundChatPort = config.chatPort;
   }
 
@@ -103,12 +135,25 @@ export class PeerService extends EventEmitter {
 
   getSnapshot(): StateSnapshot {
     const state = this.getState();
-    const permittedActions: StateSnapshot["permittedActions"] =
-      state === "DISCONNECTED"
-        ? ["connect"]
-        : state === "CONNECTING"
-          ? ["disconnect"]
-          : ["disconnect", "send_message"];
+    const permittedActions: PeerAction[] = [];
+    if (state === "DISCONNECTED") {
+      permittedActions.push("connect");
+    } else {
+      permittedActions.push("disconnect");
+      if (state !== "CONNECTING") {
+        permittedActions.push("send_message");
+      }
+    }
+    if (state === "CLEAR_EXCHANGED" && this.identity) {
+      permittedActions.push("exchange_keys");
+    }
+    if (
+      state === "KEYS_UNVERIFIED" &&
+      this.session?.peerFingerprint &&
+      !this.session.localFingerprintVerified
+    ) {
+      permittedActions.push("verify_fingerprint", "reject_fingerprint");
+    }
 
     return {
       state,
@@ -119,6 +164,10 @@ export class PeerService extends EventEmitter {
       chatBindAddress: this.config.chatBindAddress,
       sentClearMessage: this.session?.sentClearMessage ?? false,
       receivedClearMessage: this.session?.receivedClearMessage ?? false,
+      peerFingerprint: this.session?.peerFingerprint ?? null,
+      localFingerprintVerified: this.session?.localFingerprintVerified ?? false,
+      peerVerifiedLocalFingerprint:
+        this.session?.peerVerifiedLocalFingerprint ?? false,
       permittedActions,
     };
   }
@@ -207,6 +256,14 @@ export class PeerService extends EventEmitter {
       sentClearMessage: false,
       receivedClearMessage: false,
       clearExchangeAnnounced: false,
+      identityExchangeStarted: false,
+      identityRequestId: null,
+      localIdentitySent: false,
+      peerPublicKey: null,
+      peerPublicKeyPem: null,
+      peerFingerprint: null,
+      localFingerprintVerified: false,
+      peerVerifiedLocalFingerprint: false,
       handshakeTimer: null,
     };
     this.session = session;
@@ -267,6 +324,67 @@ export class PeerService extends EventEmitter {
     this.emitState();
   }
 
+  exchangeIdentityKeys(): void {
+    const session = this.requireReadySession();
+    const identity = this.requireIdentity();
+    if (this.getState() !== "CLEAR_EXCHANGED") {
+      throw new Error(
+        "Exchange a plaintext message in both directions before exchanging public keys.",
+      );
+    }
+
+    const requestId = randomUUID();
+    session.identityExchangeStarted = true;
+    session.identityRequestId = requestId;
+    this.writeFrame(session, {
+      v: PROTOCOL_VERSION,
+      type: "identity_request",
+      connectionId: session.connectionId,
+      requestId,
+    });
+    this.sendIdentityKey(session, requestId, identity);
+    this.emitSecurity("info", "Public identity-key exchange initiated.");
+    this.emitState();
+  }
+
+  verifyPeerFingerprint(decision: "accept" | "reject"): void {
+    const session = this.requireReadySession();
+    const identity = this.requireIdentity();
+    if (!session.peerPublicKey || !session.peerFingerprint) {
+      throw new Error("Wait for the peer's public identity key before verification.");
+    }
+
+    if (decision === "reject") {
+      this.emitSecurity("error", "The local user rejected the peer fingerprint.");
+      this.endSession(session, "Fingerprint rejected by the local user.", true, false);
+      return;
+    }
+    if (session.localFingerprintVerified) {
+      return;
+    }
+
+    session.localFingerprintVerified = true;
+    this.writeFrame(session, {
+      v: PROTOCOL_VERSION,
+      type: "fingerprint_verified",
+      connectionId: session.connectionId,
+      senderFingerprint: identity.fingerprint,
+      recipientFingerprint: session.peerFingerprint,
+      signatureAlgorithm: VERIFICATION_SIGNATURE_ALGORITHM,
+      signature: signFingerprintVerification(
+        identity.privateKey,
+        session.connectionId,
+        identity.fingerprint,
+        session.peerFingerprint,
+      ),
+    });
+    this.emitSecurity(
+      "success",
+      "Peer fingerprint marked as verified; a signed confirmation was sent.",
+    );
+    this.emitState();
+  }
+
   onState(listener: (snapshot: StateSnapshot) => void): () => void {
     this.on("state", listener);
     return () => this.off("state", listener);
@@ -288,6 +406,15 @@ export class PeerService extends EventEmitter {
     }
     if (this.session.phase !== "READY") {
       return "CONNECTING";
+    }
+    if (
+      this.session.localFingerprintVerified &&
+      this.session.peerVerifiedLocalFingerprint
+    ) {
+      return "IDENTITY_VERIFIED";
+    }
+    if (this.session.identityExchangeStarted) {
+      return "KEYS_UNVERIFIED";
     }
     return this.session.sentClearMessage && this.session.receivedClearMessage
       ? "CLEAR_EXCHANGED"
@@ -328,6 +455,14 @@ export class PeerService extends EventEmitter {
       sentClearMessage: false,
       receivedClearMessage: false,
       clearExchangeAnnounced: false,
+      identityExchangeStarted: false,
+      identityRequestId: null,
+      localIdentitySent: false,
+      peerPublicKey: null,
+      peerPublicKeyPem: null,
+      peerFingerprint: null,
+      localFingerprintVerified: false,
+      peerVerifiedLocalFingerprint: false,
       handshakeTimer: null,
     };
     this.session = session;
@@ -404,6 +539,15 @@ export class PeerService extends EventEmitter {
       case "clear_message":
         this.acceptClearMessage(session, frame);
         break;
+      case "identity_request":
+        this.acceptIdentityRequest(session, frame);
+        break;
+      case "identity_key":
+        this.acceptIdentityKey(session, frame);
+        break;
+      case "fingerprint_verified":
+        this.acceptFingerprintVerification(session, frame);
+        break;
       case "goodbye":
         this.emitSecurity("info", `Peer disconnected: ${frame.reason}`);
         this.endSession(session, "Peer disconnected.", false, false);
@@ -477,6 +621,158 @@ export class PeerService extends EventEmitter {
     this.emitState();
   }
 
+  private acceptIdentityRequest(session: PeerSession, frame: IdentityRequestFrame): void {
+    if (!session.sentClearMessage || !session.receivedClearMessage) {
+      this.failProtocol(
+        session,
+        "unexpected_frame",
+        "Public-key exchange requires plaintext messages in both directions first.",
+      );
+      return;
+    }
+
+    const identity = this.requireIdentityForProtocol(session);
+    if (!identity) {
+      return;
+    }
+    if (
+      session.identityRequestId &&
+      session.identityRequestId !== frame.requestId
+    ) {
+      this.failProtocol(
+        session,
+        "unexpected_frame",
+        "A different public-key exchange is already active.",
+      );
+      return;
+    }
+
+    session.identityExchangeStarted = true;
+    session.identityRequestId = frame.requestId;
+    this.sendIdentityKey(session, frame.requestId, identity);
+    this.emitSecurity("info", "Peer requested the local public identity key.");
+    this.emitState();
+  }
+
+  private acceptIdentityKey(session: PeerSession, frame: IdentityKeyFrame): void {
+    if (
+      !session.identityExchangeStarted ||
+      session.identityRequestId !== frame.requestId
+    ) {
+      this.failProtocol(
+        session,
+        "unexpected_frame",
+        "Received a public key outside the active key exchange.",
+      );
+      return;
+    }
+
+    const identity = this.requireIdentityForProtocol(session);
+    if (!identity) {
+      return;
+    }
+
+    let imported: ReturnType<typeof importIdentityPublicKey>;
+    try {
+      imported = importIdentityPublicKey(frame.publicKeyPem);
+    } catch {
+      this.failProtocol(session, "invalid_frame", "Peer sent an invalid RSA identity key.");
+      return;
+    }
+
+    if (imported.fingerprint === identity.fingerprint) {
+      this.failProtocol(session, "invalid_frame", "Peer identity matches the local identity.");
+      return;
+    }
+    if (
+      session.peerFingerprint &&
+      session.peerFingerprint !== imported.fingerprint
+    ) {
+      this.failProtocol(session, "invalid_frame", "Peer changed identity keys mid-session.");
+      return;
+    }
+
+    session.peerPublicKey = imported.publicKey;
+    session.peerPublicKeyPem = frame.publicKeyPem;
+    session.peerFingerprint = imported.fingerprint;
+    this.emitSecurity(
+      "success",
+      "Peer RSA-3072 public key received; its SHA-256 fingerprint was computed locally.",
+    );
+    this.emitState();
+  }
+
+  private acceptFingerprintVerification(
+    session: PeerSession,
+    frame: FingerprintVerifiedFrame,
+  ): void {
+    const identity = this.requireIdentityForProtocol(session);
+    if (!identity) {
+      return;
+    }
+    if (!session.peerPublicKey || !session.peerFingerprint) {
+      this.failProtocol(
+        session,
+        "unexpected_frame",
+        "Received fingerprint confirmation before the peer public key.",
+      );
+      return;
+    }
+    if (
+      frame.senderFingerprint !== session.peerFingerprint ||
+      frame.recipientFingerprint !== identity.fingerprint
+    ) {
+      this.failProtocol(
+        session,
+        "invalid_frame",
+        "Fingerprint confirmation is bound to different identities.",
+      );
+      return;
+    }
+
+    const signatureValid = verifyFingerprintVerification(
+      session.peerPublicKey,
+      session.connectionId,
+      frame.senderFingerprint,
+      frame.recipientFingerprint,
+      frame.signature,
+    );
+    if (!signatureValid) {
+      this.failProtocol(
+        session,
+        "invalid_frame",
+        "Peer fingerprint-confirmation signature is invalid.",
+      );
+      return;
+    }
+
+    if (!session.peerVerifiedLocalFingerprint) {
+      session.peerVerifiedLocalFingerprint = true;
+      this.emitSecurity(
+        "success",
+        "Peer's RSA-PSS signature is valid; the peer reports verifying this client's fingerprint.",
+      );
+      this.emitState();
+    }
+  }
+
+  private sendIdentityKey(
+    session: PeerSession,
+    requestId: string,
+    identity: LocalIdentity,
+  ): void {
+    this.writeFrame(session, {
+      v: PROTOCOL_VERSION,
+      type: "identity_key",
+      connectionId: session.connectionId,
+      requestId,
+      algorithm: identity.algorithm,
+      publicKeyPem: identity.publicKeyPem,
+    });
+    session.localIdentitySent = true;
+    this.emitSecurity("info", "Local RSA-3072 public identity key sent to the peer.");
+  }
+
   private updateClearExchangeState(session: PeerSession): void {
     if (
       session.sentClearMessage &&
@@ -496,6 +792,21 @@ export class PeerService extends EventEmitter {
       throw new Error("Connect to a peer before sending a message.");
     }
     return this.session;
+  }
+
+  private requireIdentity(): LocalIdentity {
+    if (!this.identity) {
+      throw new Error("Local identity is not available.");
+    }
+    return this.identity;
+  }
+
+  private requireIdentityForProtocol(session: PeerSession): LocalIdentity | null {
+    if (!this.identity) {
+      this.failProtocol(session, "unexpected_frame", "Local identity is not available.");
+      return null;
+    }
+    return this.identity;
   }
 
   private writeFrame(session: PeerSession, frame: PeerFrame): void {

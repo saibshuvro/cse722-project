@@ -57,6 +57,16 @@ button:disabled {
   color: #d7e0ee;
 }
 
+.button--danger {
+  border-color: rgba(248, 113, 113, 0.7);
+  background: rgba(239, 68, 68, 0.16);
+  color: #fca5a5;
+}
+
+.button--danger:hover:not(:disabled) {
+  background: rgba(239, 68, 68, 0.28);
+}
+
 input {
   min-width: 0;
   min-height: 2.85rem;
@@ -154,10 +164,17 @@ h2 {
 
 .status--connected,
 .phase-badge--connected_clear,
-.phase-badge--clear_exchanged {
+.phase-badge--clear_exchanged,
+.phase-badge--identity_verified {
   border-color: rgba(45, 212, 191, 0.5);
   background: rgba(20, 184, 166, 0.14);
   color: #5eead4;
+}
+
+.phase-badge--keys_unverified {
+  border-color: rgba(251, 191, 36, 0.5);
+  background: rgba(245, 158, 11, 0.14);
+  color: #fcd34d;
 }
 
 .status--error {
@@ -177,9 +194,28 @@ h2 {
 }
 
 .identity-explanation {
-  max-width: 56rem;
-  margin: 1.25rem 0;
+  margin: 0.5rem 0 1rem;
   color: #9fb0c7;
+}
+
+.identity-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1rem;
+  margin-top: 1.25rem;
+}
+
+.identity-grid article {
+  min-width: 0;
+  padding: 1rem;
+  border: 1px solid #21324a;
+  border-radius: 0.8rem;
+  background: rgba(9, 21, 38, 0.55);
+}
+
+.identity-grid h3 {
+  margin: 0;
+  font-size: 1rem;
 }
 
 .fingerprint-box {
@@ -205,6 +241,10 @@ h2 {
   color: #7f91aa;
 }
 
+.fingerprint-box--peer {
+  min-height: 4.65rem;
+}
+
 .fingerprint-actions {
   display: flex;
   gap: 0.55rem;
@@ -214,6 +254,31 @@ h2 {
   margin: 0.7rem 0 0;
   color: #7f91aa;
   font-size: 0.8rem;
+}
+
+.verification-status {
+  display: grid;
+  gap: 0.35rem;
+  margin-top: 0.8rem;
+  color: #9fb0c7;
+  font-size: 0.8rem;
+}
+
+.verification-status p {
+  margin: 0;
+}
+
+.identity-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.65rem;
+  margin-top: 1rem;
+}
+
+.verification-help {
+  margin: 0.8rem 0 0;
+  color: #9fb0c7;
+  font-size: 0.82rem;
 }
 
 .input-row,
@@ -376,6 +441,16 @@ dd {
   color: #5eead4;
 }
 
+.step-list .is-active {
+  color: #fcd34d;
+}
+
+.step-list .is-active > span {
+  border-color: rgba(251, 191, 36, 0.6);
+  background: rgba(245, 158, 11, 0.14);
+  color: #fcd34d;
+}
+
 .step-list .is-future {
   opacity: 0.45;
 }
@@ -455,7 +530,8 @@ dd {
 
   .input-row,
   .runtime-grid,
-  .fingerprint-box {
+  .fingerprint-box,
+  .identity-grid {
     grid-template-columns: 1fr;
   }
 

@@ -20,6 +20,13 @@ const localFingerprint = document.querySelector("#local-fingerprint");
 const identityCreated = document.querySelector("#identity-created");
 const toggleFingerprint = document.querySelector("#toggle-fingerprint");
 const copyFingerprint = document.querySelector("#copy-fingerprint");
+const peerFingerprint = document.querySelector("#peer-fingerprint");
+const localVerificationStatus = document.querySelector("#local-verification-status");
+const peerVerificationStatus = document.querySelector("#peer-verification-status");
+const exchangeKeysButton = document.querySelector("#exchange-keys-button");
+const confirmFingerprintButton = document.querySelector("#confirm-fingerprint-button");
+const rejectFingerprintButton = document.querySelector("#reject-fingerprint-button");
+const stepIdentity = document.querySelector("#step-identity");
 
 let controlSocket;
 let currentState = "DISCONNECTED";
@@ -87,20 +94,46 @@ function applyState(message) {
   const canConnect = message.permittedActions.includes("connect");
   const canDisconnect = message.permittedActions.includes("disconnect");
   const canSend = message.permittedActions.includes("send_message");
+  const canExchangeKeys = message.permittedActions.includes("exchange_keys");
+  const canVerifyFingerprint = message.permittedActions.includes("verify_fingerprint");
+  const canRejectFingerprint = message.permittedActions.includes("reject_fingerprint");
 
   peerIpInput.disabled = !canConnect;
   connectButton.disabled = !canConnect;
   disconnectButton.disabled = !canDisconnect;
   messageInput.disabled = !canSend;
   sendButton.disabled = !canSend;
+  exchangeKeysButton.disabled = !canExchangeKeys;
+  confirmFingerprintButton.disabled = !canVerifyFingerprint;
+  rejectFingerprintButton.disabled = !canRejectFingerprint;
   peerAddress.textContent = message.peerIp
     ? `${message.peerIp}:${message.peerPort} (${message.direction})`
     : "None";
   chatAddress.textContent = `${message.chatBindAddress}:${message.chatPort}`;
 
-  const connected = message.state === "CONNECTED_CLEAR" || message.state === "CLEAR_EXCHANGED";
+  const connected = message.state !== "DISCONNECTED" && message.state !== "CONNECTING";
+  const clearComplete = ["CLEAR_EXCHANGED", "KEYS_UNVERIFIED", "IDENTITY_VERIFIED"].includes(
+    message.state,
+  );
   stepConnected.classList.toggle("is-complete", connected);
-  stepClear.classList.toggle("is-complete", message.state === "CLEAR_EXCHANGED");
+  stepClear.classList.toggle("is-complete", clearComplete);
+  stepIdentity.classList.toggle("is-future", !clearComplete);
+  stepIdentity.classList.toggle("is-active", message.state === "KEYS_UNVERIFIED");
+  stepIdentity.classList.toggle("is-complete", message.state === "IDENTITY_VERIFIED");
+
+  peerFingerprint.textContent = message.peerFingerprint ?? "Public key not received";
+  localVerificationStatus.textContent = message.localFingerprintVerified
+    ? "✓ You verified the peer fingerprint"
+    : message.peerFingerprint
+      ? "Awaiting your fingerprint comparison"
+      : "Awaiting public-key exchange";
+  peerVerificationStatus.textContent = message.peerVerifiedLocalFingerprint
+    ? "✓ Peer verified this client's fingerprint"
+    : "Awaiting peer confirmation";
+
+  if (message.state === "DISCONNECTED") {
+    peerFingerprint.textContent = "Public key not received";
+  }
 
   if (canSend && document.activeElement !== peerIpInput) {
     messageInput.focus();
@@ -180,6 +213,9 @@ function connectControlSocket() {
     disconnectButton.disabled = true;
     messageInput.disabled = true;
     sendButton.disabled = true;
+    exchangeKeysButton.disabled = true;
+    confirmFingerprintButton.disabled = true;
+    rejectFingerprintButton.disabled = true;
     if (currentState !== "DISCONNECTED") {
       appendEvent("Local control channel closed.", "error");
     }
@@ -213,6 +249,18 @@ messageForm.addEventListener("submit", (event) => {
   if (sendCommand({ type: "send_message", text })) {
     messageInput.value = "";
   }
+});
+
+exchangeKeysButton.addEventListener("click", () => {
+  sendCommand({ type: "exchange_keys" });
+});
+
+confirmFingerprintButton.addEventListener("click", () => {
+  sendCommand({ type: "verify_fingerprint", decision: "accept" });
+});
+
+rejectFingerprintButton.addEventListener("click", () => {
+  sendCommand({ type: "verify_fingerprint", decision: "reject" });
 });
 
 toggleFingerprint.addEventListener("click", () => {

@@ -27,7 +27,7 @@ function listenHttp(server: HttpServer, port: number): Promise<void> {
 async function main(): Promise<void> {
   const config = loadConfig();
   const identityResult = await loadOrCreateIdentity(config.dataDir);
-  const peerService = new PeerService(config, identityResult.identity.installationId);
+  const peerService = new PeerService(config, identityResult.identity);
   await peerService.start();
 
   const app = createApp(config);

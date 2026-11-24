@@ -65,29 +65,60 @@
       <section class="panel identity-panel" aria-labelledby="identity-heading">
         <div class="panel__heading">
           <div>
-            <p class="step-label">Local identity</p>
-            <h2 id="identity-heading">Public-key fingerprint</h2>
+            <p class="step-label">Step 3</p>
+            <h2 id="identity-heading">Identity keys and fingerprints</h2>
           </div>
           <span id="identity-algorithm" class="identity-badge">Loading…</span>
         </div>
 
-        <p class="identity-explanation">
-          This fingerprint identifies the public half of this client's persistent identity key.
-          The private key remains in protected local storage.
-        </p>
+        <div class="identity-grid">
+          <article>
+            <h3>This client</h3>
+            <p class="identity-explanation">
+              The private key remains in protected local storage.
+            </p>
+            <div class="fingerprint-box">
+              <code id="local-fingerprint" data-visible="false">Fingerprint hidden</code>
+              <div class="fingerprint-actions">
+                <button id="toggle-fingerprint" class="button--secondary" type="button" disabled>
+                  Show fingerprint
+                </button>
+                <button id="copy-fingerprint" class="button--secondary" type="button" disabled>
+                  Copy
+                </button>
+              </div>
+            </div>
+            <p id="identity-created" class="identity-created">Loading local identity…</p>
+          </article>
 
-        <div class="fingerprint-box">
-          <code id="local-fingerprint" data-visible="false">Fingerprint hidden</code>
-          <div class="fingerprint-actions">
-            <button id="toggle-fingerprint" class="button--secondary" type="button" disabled>
-              Show fingerprint
-            </button>
-            <button id="copy-fingerprint" class="button--secondary" type="button" disabled>
-              Copy
-            </button>
-          </div>
+          <article>
+            <h3>Connected peer</h3>
+            <p class="identity-explanation">
+              Computed locally from the public key received over TCP.
+            </p>
+            <div class="fingerprint-box fingerprint-box--peer">
+              <code id="peer-fingerprint">Public key not received</code>
+            </div>
+            <div class="verification-status">
+              <p id="local-verification-status">Awaiting public-key exchange</p>
+              <p id="peer-verification-status">Awaiting peer confirmation</p>
+            </div>
+          </article>
         </div>
-        <p id="identity-created" class="identity-created">Loading local identity…</p>
+
+        <div class="identity-controls">
+          <button id="exchange-keys-button" type="button" disabled>Exchange Public Keys</button>
+          <button id="confirm-fingerprint-button" type="button" disabled>
+            Fingerprints match
+          </button>
+          <button id="reject-fingerprint-button" class="button--danger" type="button" disabled>
+            Reject fingerprint
+          </button>
+        </div>
+        <p class="verification-help">
+          Compare each received peer fingerprint with the fingerprint displayed on the other
+          machine. Both users must confirm a match before secure-key transfer is enabled.
+        </p>
       </section>
 
       <section class="workspace-grid">
@@ -131,7 +162,7 @@
           <ol class="step-list">
             <li id="step-connected"><span>1</span>Direct TCP connected</li>
             <li id="step-clear"><span>2</span>Plaintext exchanged both ways</li>
-            <li class="is-future"><span>3</span>Public keys verified</li>
+            <li id="step-identity" class="is-future"><span>3</span>Public keys verified</li>
             <li class="is-future"><span>4</span>Secure session active</li>
           </ol>
         </aside>
