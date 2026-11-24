@@ -19,14 +19,32 @@
         <span id="backend-status" class="status status--pending">Connecting locally…</span>
       </header>
 
-      <section class="panel" aria-labelledby="foundation-heading">
+      <section class="panel" aria-labelledby="connection-heading">
         <div class="panel__heading">
           <div>
-            <p class="step-label">Implementation status</p>
-            <h2 id="foundation-heading">Phase 1 foundation</h2>
+            <p class="step-label">Step 1</p>
+            <h2 id="connection-heading">Peer connection</h2>
           </div>
-          <span class="phase-badge">DISCONNECTED</span>
+          <span id="phase-badge" class="phase-badge">DISCONNECTED</span>
         </div>
+
+        <form id="connection-form" class="connection-form">
+          <label for="peer-ip">Peer IPv4 address</label>
+          <div class="input-row">
+            <input
+              id="peer-ip"
+              name="peerIp"
+              inputmode="decimal"
+              autocomplete="off"
+              placeholder="172.16.217.130"
+              required
+            />
+            <button id="connect-button" type="submit">Connect</button>
+            <button id="disconnect-button" class="button--secondary" type="button" disabled>
+              Disconnect
+            </button>
+          </div>
+        </form>
 
         <dl class="runtime-grid">
           <div>
@@ -34,25 +52,68 @@
             <dd id="web-address">Loading…</dd>
           </div>
           <div>
-            <dt>Peer TCP listener</dt>
+            <dt>TCP listener</dt>
             <dd id="chat-address">Loading…</dd>
           </div>
           <div>
-            <dt>Protocol version</dt>
-            <dd id="protocol-version">Loading…</dd>
+            <dt>Connected peer</dt>
+            <dd id="peer-address">None</dd>
           </div>
         </dl>
+      </section>
 
-        <p class="notice">
-          The local interface and control channel are ready. Direct TCP chat is added in Phase 2.
-        </p>
+      <section class="workspace-grid">
+        <section class="panel chat-panel" aria-labelledby="chat-heading">
+          <div class="panel__heading">
+            <div>
+              <p class="step-label">Step 2</p>
+              <h2 id="chat-heading">Plaintext chat</h2>
+            </div>
+            <span class="mode-badge mode-badge--clear">PLAINTEXT</span>
+          </div>
+
+          <div id="empty-chat" class="empty-state">
+            Connect to the other client to begin the plaintext demonstration.
+          </div>
+          <ol id="message-list" class="message-list" aria-live="polite"></ol>
+
+          <form id="message-form" class="message-form">
+            <label class="sr-only" for="message-input">Message</label>
+            <input
+              id="message-input"
+              autocomplete="off"
+              maxlength="2000"
+              placeholder="Write a plaintext message…"
+              disabled
+            />
+            <button id="send-button" type="submit" disabled>Send</button>
+          </form>
+          <p class="capture-note">
+            Messages in this phase are intentionally readable in a TCP packet capture.
+          </p>
+        </section>
+
+        <aside class="panel steps-panel" aria-labelledby="steps-heading">
+          <div class="panel__heading">
+            <div>
+              <p class="step-label">Progress</p>
+              <h2 id="steps-heading">Protocol stages</h2>
+            </div>
+          </div>
+          <ol class="step-list">
+            <li id="step-connected"><span>1</span>Direct TCP connected</li>
+            <li id="step-clear"><span>2</span>Plaintext exchanged both ways</li>
+            <li class="is-future"><span>3</span>Public keys verified</li>
+            <li class="is-future"><span>4</span>Secure session active</li>
+          </ol>
+        </aside>
       </section>
 
       <section class="panel" aria-labelledby="events-heading">
         <div class="panel__heading">
           <div>
-            <p class="step-label">Local diagnostics</p>
-            <h2 id="events-heading">Event log</h2>
+            <p class="step-label">Diagnostics</p>
+            <h2 id="events-heading">Security and event log</h2>
           </div>
         </div>
         <ol id="event-log" class="event-log" aria-live="polite"></ol>
