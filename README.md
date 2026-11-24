@@ -2,7 +2,7 @@
 
 A two-peer chat application for demonstrating plaintext communication, manual identity-key verification, authenticated AES-256 key transfer, and AES-256-GCM encrypted messaging.
 
-Phase 4 provides direct TCP plaintext chat, persistent RSA-3072 identities, public-key exchange, and mutual out-of-band fingerprint verification. Authenticated AES-key transfer and encrypted chat are added in later phases.
+Phase 5 provides direct TCP plaintext chat, persistent RSA-3072 identities, mutual out-of-band fingerprint verification, and authenticated AES-256 session-key transfer. AES-GCM encrypted chat is added in Phase 6.
 
 ## Requirements
 
@@ -89,6 +89,19 @@ Complete the plaintext exchange first. Once each client has sent and received at
 Each confirmation is signed with RSA-PSS/SHA-256 and bound to the current connection and both fingerprints. The event log shows when the peer's signed confirmation is valid. Selecting **Reject fingerprint**, receiving a changed key, or receiving an invalid signature terminates the connection.
 
 Public keys and fingerprints are not secret. Never compare or transmit the private-key files.
+
+## Authenticated AES-key transfer
+
+After both clients reach `IDENTITY_VERIFIED`:
+
+1. Select **Start Secure Session** on either client.
+2. The initiator generates a fresh 256-bit AES key in memory, wraps it for the peer with RSA-OAEP/SHA-256, and signs the complete offer with RSA-PSS/SHA-256.
+3. Confirm both clients briefly enter `SECURE_NEGOTIATING` and then reach `SECURE_ACTIVE`.
+4. Check the event logs for the connection and fingerprint binding, valid RSA-PSS signature, successful RSA-OAEP decryption, and two-way AES-GCM key-possession proofs.
+
+The AES key is never logged, sent in plaintext, or written to disk. Disconnecting erases the in-memory session key, and reconnecting requires a new verification and key-transfer flow. Plaintext chat is disabled once secure negotiation starts; encrypted chat becomes available in Phase 6.
+
+In Wireshark, the `key_offer` frame visibly identifies `RSA-OAEP-SHA256` and `RSA-PSS-SHA256`, while `key_confirm` and `secure_ready` identify `AES-256-GCM`. Their encrypted fields do not reveal the AES key or confirmation payload.
 
 ## Configuration
 

@@ -26,7 +26,10 @@ const peerVerificationStatus = document.querySelector("#peer-verification-status
 const exchangeKeysButton = document.querySelector("#exchange-keys-button");
 const confirmFingerprintButton = document.querySelector("#confirm-fingerprint-button");
 const rejectFingerprintButton = document.querySelector("#reject-fingerprint-button");
+const startSecureSessionButton = document.querySelector("#start-secure-session-button");
+const secureSessionStatus = document.querySelector("#secure-session-status");
 const stepIdentity = document.querySelector("#step-identity");
+const stepSecure = document.querySelector("#step-secure");
 
 let controlSocket;
 let currentState = "DISCONNECTED";
@@ -97,6 +100,7 @@ function applyState(message) {
   const canExchangeKeys = message.permittedActions.includes("exchange_keys");
   const canVerifyFingerprint = message.permittedActions.includes("verify_fingerprint");
   const canRejectFingerprint = message.permittedActions.includes("reject_fingerprint");
+  const canStartSecureSession = message.permittedActions.includes("start_secure_session");
 
   peerIpInput.disabled = !canConnect;
   connectButton.disabled = !canConnect;
@@ -106,20 +110,52 @@ function applyState(message) {
   exchangeKeysButton.disabled = !canExchangeKeys;
   confirmFingerprintButton.disabled = !canVerifyFingerprint;
   rejectFingerprintButton.disabled = !canRejectFingerprint;
+  startSecureSessionButton.disabled = !canStartSecureSession;
   peerAddress.textContent = message.peerIp
     ? `${message.peerIp}:${message.peerPort} (${message.direction})`
     : "None";
   chatAddress.textContent = `${message.chatBindAddress}:${message.chatPort}`;
 
   const connected = message.state !== "DISCONNECTED" && message.state !== "CONNECTING";
-  const clearComplete = ["CLEAR_EXCHANGED", "KEYS_UNVERIFIED", "IDENTITY_VERIFIED"].includes(
-    message.state,
-  );
+  const clearComplete = [
+    "CLEAR_EXCHANGED",
+    "KEYS_UNVERIFIED",
+    "IDENTITY_VERIFIED",
+    "SECURE_NEGOTIATING",
+    "SECURE_ACTIVE",
+  ].includes(message.state);
+  const identityComplete = [
+    "IDENTITY_VERIFIED",
+    "SECURE_NEGOTIATING",
+    "SECURE_ACTIVE",
+  ].includes(message.state);
   stepConnected.classList.toggle("is-complete", connected);
   stepClear.classList.toggle("is-complete", clearComplete);
   stepIdentity.classList.toggle("is-future", !clearComplete);
   stepIdentity.classList.toggle("is-active", message.state === "KEYS_UNVERIFIED");
-  stepIdentity.classList.toggle("is-complete", message.state === "IDENTITY_VERIFIED");
+  stepIdentity.classList.toggle("is-complete", identityComplete);
+  stepSecure.classList.toggle("is-future", !identityComplete);
+  stepSecure.classList.toggle(
+    "is-active",
+    message.state === "IDENTITY_VERIFIED" || message.state === "SECURE_NEGOTIATING",
+  );
+  stepSecure.classList.toggle("is-complete", message.state === "SECURE_ACTIVE");
+
+  secureSessionStatus.textContent =
+    message.state === "SECURE_ACTIVE"
+      ? "✓ Authenticated AES-256 session key established"
+      : message.state === "SECURE_NEGOTIATING"
+        ? "Authenticating the AES-256 session key…"
+        : message.state === "IDENTITY_VERIFIED"
+          ? "Ready to establish an authenticated AES-256 session key."
+          : "Secure session not started.";
+
+  messageInput.placeholder =
+    message.state === "SECURE_ACTIVE"
+      ? "Encrypted chat is enabled in Phase 6…"
+      : message.state === "SECURE_NEGOTIATING"
+        ? "Secure session negotiation in progress…"
+        : "Write a plaintext message…";
 
   peerFingerprint.textContent = message.peerFingerprint ?? "Public key not received";
   localVerificationStatus.textContent = message.localFingerprintVerified
@@ -135,9 +171,6 @@ function applyState(message) {
     peerFingerprint.textContent = "Public key not received";
   }
 
-  if (canSend && document.activeElement !== peerIpInput) {
-    messageInput.focus();
-  }
 }
 
 function applyIdentity(message) {
@@ -216,6 +249,7 @@ function connectControlSocket() {
     exchangeKeysButton.disabled = true;
     confirmFingerprintButton.disabled = true;
     rejectFingerprintButton.disabled = true;
+    startSecureSessionButton.disabled = true;
     if (currentState !== "DISCONNECTED") {
       appendEvent("Local control channel closed.", "error");
     }
@@ -261,6 +295,10 @@ confirmFingerprintButton.addEventListener("click", () => {
 
 rejectFingerprintButton.addEventListener("click", () => {
   sendCommand({ type: "verify_fingerprint", decision: "reject" });
+});
+
+startSecureSessionButton.addEventListener("click", () => {
+  sendCommand({ type: "start_secure_session" });
 });
 
 toggleFingerprint.addEventListener("click", () => {

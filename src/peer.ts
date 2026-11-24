@@ -16,9 +16,25 @@ import {
   type HelloFrame,
   type IdentityKeyFrame,
   type IdentityRequestFrame,
+  type KeyConfirmFrame,
+  type KeyOfferFrame,
   type PeerFrame,
   type ProtocolErrorCode,
+  type SecureReadyFrame,
 } from "./protocol.js";
+import {
+  decryptKeyConfirmation,
+  encryptKeyConfirmation,
+  generateSecureSessionId,
+  generateSessionKey,
+  KEY_OFFER_SIGNATURE_ALGORITHM,
+  KEY_WRAP_ALGORITHM,
+  SESSION_CIPHER_ALGORITHM,
+  signKeyOffer,
+  unwrapSessionKey,
+  verifyKeyOffer,
+  wrapSessionKey,
+} from "./secure-session.js";
 import {
   signFingerprintVerification,
   VERIFICATION_SIGNATURE_ALGORITHM,
@@ -31,7 +47,9 @@ export type PeerState =
   | "CONNECTED_CLEAR"
   | "CLEAR_EXCHANGED"
   | "KEYS_UNVERIFIED"
-  | "IDENTITY_VERIFIED";
+  | "IDENTITY_VERIFIED"
+  | "SECURE_NEGOTIATING"
+  | "SECURE_ACTIVE";
 
 export type PeerAction =
   | "connect"
@@ -39,7 +57,8 @@ export type PeerAction =
   | "send_message"
   | "exchange_keys"
   | "verify_fingerprint"
-  | "reject_fingerprint";
+  | "reject_fingerprint"
+  | "start_secure_session";
 
 export type SecuritySeverity = "info" | "success" | "warning" | "error";
 
@@ -76,6 +95,13 @@ export interface SecurityEvent {
 
 type SessionPhase = "WAITING_FOR_HELLO" | "WAITING_FOR_ACK" | "READY";
 
+interface SecureContext {
+  readonly sessionId: string;
+  readonly key: Buffer;
+  readonly role: "initiator" | "recipient";
+  stage: "WAITING_FOR_CONFIRM" | "WAITING_FOR_READY" | "ACTIVE";
+}
+
 interface PeerSession {
   readonly socket: Socket;
   readonly decoder: NdjsonFrameDecoder;
@@ -96,6 +122,7 @@ interface PeerSession {
   peerFingerprint: string | null;
   localFingerprintVerified: boolean;
   peerVerifiedLocalFingerprint: boolean;
+  secure: SecureContext | null;
   handshakeTimer: NodeJS.Timeout | null;
 }
 
@@ -140,7 +167,14 @@ export class PeerService extends EventEmitter {
       permittedActions.push("connect");
     } else {
       permittedActions.push("disconnect");
-      if (state !== "CONNECTING") {
+      if (
+        [
+          "CONNECTED_CLEAR",
+          "CLEAR_EXCHANGED",
+          "KEYS_UNVERIFIED",
+          "IDENTITY_VERIFIED",
+        ].includes(state)
+      ) {
         permittedActions.push("send_message");
       }
     }
@@ -153,6 +187,9 @@ export class PeerService extends EventEmitter {
       !this.session.localFingerprintVerified
     ) {
       permittedActions.push("verify_fingerprint", "reject_fingerprint");
+    }
+    if (state === "IDENTITY_VERIFIED") {
+      permittedActions.push("start_secure_session");
     }
 
     return {
@@ -264,6 +301,7 @@ export class PeerService extends EventEmitter {
       peerFingerprint: null,
       localFingerprintVerified: false,
       peerVerifiedLocalFingerprint: false,
+      secure: null,
       handshakeTimer: null,
     };
     this.session = session;
@@ -294,6 +332,9 @@ export class PeerService extends EventEmitter {
 
   sendClearMessage(input: string): void {
     const session = this.requireReadySession();
+    if (session.secure) {
+      throw new Error("Plaintext messaging is disabled after secure negotiation starts.");
+    }
     const text = input.trim();
     if (text.length === 0) {
       throw new Error("Message cannot be empty.");
@@ -385,6 +426,64 @@ export class PeerService extends EventEmitter {
     this.emitState();
   }
 
+  startSecureSession(): void {
+    const session = this.requireReadySession();
+    const identity = this.requireIdentity();
+    if (
+      this.getState() !== "IDENTITY_VERIFIED" ||
+      !session.peerPublicKey ||
+      !session.peerFingerprint
+    ) {
+      throw new Error("Both fingerprints must be verified before starting a secure session.");
+    }
+
+    const key = generateSessionKey();
+    const sessionId = generateSecureSessionId();
+    try {
+      const wrappedKey = wrapSessionKey(session.peerPublicKey, key);
+      const signature = signKeyOffer(
+        identity.privateKey,
+        session.connectionId,
+        sessionId,
+        identity.fingerprint,
+        session.peerFingerprint,
+        wrappedKey,
+      );
+      session.secure = {
+        sessionId,
+        key,
+        role: "initiator",
+        stage: "WAITING_FOR_CONFIRM",
+      };
+      this.writeFrame(session, {
+        v: PROTOCOL_VERSION,
+        type: "key_offer",
+        connectionId: session.connectionId,
+        sessionId,
+        senderFingerprint: identity.fingerprint,
+        recipientFingerprint: session.peerFingerprint,
+        algorithm: KEY_WRAP_ALGORITHM,
+        wrappedKey,
+        signatureAlgorithm: KEY_OFFER_SIGNATURE_ALGORITHM,
+        signature,
+      });
+    } catch (error) {
+      key.fill(0);
+      session.secure = null;
+      throw new Error(`Unable to create the authenticated key offer: ${errorMessage(error)}`);
+    }
+
+    this.emitSecurity(
+      "info",
+      "Generated a fresh in-memory AES-256 key and wrapped it for the verified peer with RSA-OAEP/SHA-256.",
+    );
+    this.emitSecurity(
+      "info",
+      "Signed and sent the key offer with RSA-PSS/SHA-256; awaiting peer key-possession confirmation.",
+    );
+    this.emitState();
+  }
+
   onState(listener: (snapshot: StateSnapshot) => void): () => void {
     this.on("state", listener);
     return () => this.off("state", listener);
@@ -406,6 +505,12 @@ export class PeerService extends EventEmitter {
     }
     if (this.session.phase !== "READY") {
       return "CONNECTING";
+    }
+    if (this.session.secure?.stage === "ACTIVE") {
+      return "SECURE_ACTIVE";
+    }
+    if (this.session.secure) {
+      return "SECURE_NEGOTIATING";
     }
     if (
       this.session.localFingerprintVerified &&
@@ -463,6 +568,7 @@ export class PeerService extends EventEmitter {
       peerFingerprint: null,
       localFingerprintVerified: false,
       peerVerifiedLocalFingerprint: false,
+      secure: null,
       handshakeTimer: null,
     };
     this.session = session;
@@ -548,6 +654,15 @@ export class PeerService extends EventEmitter {
       case "fingerprint_verified":
         this.acceptFingerprintVerification(session, frame);
         break;
+      case "key_offer":
+        this.acceptKeyOffer(session, frame);
+        break;
+      case "key_confirm":
+        this.acceptKeyConfirm(session, frame);
+        break;
+      case "secure_ready":
+        this.acceptSecureReady(session, frame);
+        break;
       case "goodbye":
         this.emitSecurity("info", `Peer disconnected: ${frame.reason}`);
         this.endSession(session, "Peer disconnected.", false, false);
@@ -608,6 +723,14 @@ export class PeerService extends EventEmitter {
   }
 
   private acceptClearMessage(session: PeerSession, frame: ClearMessageFrame): void {
+    if (session.secure) {
+      this.failProtocol(
+        session,
+        "unexpected_frame",
+        "Received a plaintext message after secure negotiation started.",
+      );
+      return;
+    }
     session.receivedClearMessage = true;
     this.emitChat({
       type: "chat_message",
@@ -756,6 +879,261 @@ export class PeerService extends EventEmitter {
     }
   }
 
+  private acceptKeyOffer(session: PeerSession, frame: KeyOfferFrame): void {
+    const identity = this.requireIdentityForProtocol(session);
+    if (!identity) {
+      return;
+    }
+    if (
+      this.getState() !== "IDENTITY_VERIFIED" ||
+      !session.peerPublicKey ||
+      !session.peerFingerprint
+    ) {
+      this.failProtocol(
+        session,
+        "unexpected_frame",
+        "Received a key offer before mutual fingerprint verification completed.",
+      );
+      return;
+    }
+    if (
+      frame.senderFingerprint !== session.peerFingerprint ||
+      frame.recipientFingerprint !== identity.fingerprint
+    ) {
+      this.failProtocol(
+        session,
+        "invalid_frame",
+        "Key offer is bound to different identity fingerprints.",
+      );
+      return;
+    }
+
+    this.emitSecurity(
+      "success",
+      "Key offer is bound to this connection, secure-session ID, and the verified identities.",
+    );
+
+    if (
+      !verifyKeyOffer(
+        session.peerPublicKey,
+        session.connectionId,
+        frame.sessionId,
+        frame.senderFingerprint,
+        frame.recipientFingerprint,
+        frame.wrappedKey,
+        frame.signature,
+      )
+    ) {
+      this.failProtocol(session, "invalid_frame", "Peer RSA-PSS key-offer signature is invalid.");
+      return;
+    }
+    this.emitSecurity("success", "Peer RSA-PSS/SHA-256 key-offer signature is valid.");
+
+    let key: Buffer;
+    try {
+      key = unwrapSessionKey(identity.privateKey, frame.wrappedKey);
+    } catch {
+      this.failProtocol(
+        session,
+        "invalid_frame",
+        "Unable to decrypt the offered AES key with RSA-OAEP/SHA-256.",
+      );
+      return;
+    }
+
+    let confirmation: ReturnType<typeof encryptKeyConfirmation>;
+    try {
+      confirmation = encryptKeyConfirmation({
+        key,
+        frameType: "key_confirm",
+        connectionId: session.connectionId,
+        sessionId: frame.sessionId,
+        senderFingerprint: identity.fingerprint,
+        recipientFingerprint: session.peerFingerprint,
+        sequence: 0,
+      });
+    } catch {
+      key.fill(0);
+      this.failProtocol(session, "invalid_frame", "Unable to create key-possession confirmation.");
+      return;
+    }
+
+    session.secure = {
+      sessionId: frame.sessionId,
+      key,
+      role: "recipient",
+      stage: "WAITING_FOR_READY",
+    };
+    this.emitSecurity(
+      "success",
+      "AES-256 session key decrypted with the local RSA-OAEP/SHA-256 private key.",
+    );
+    this.writeFrame(session, {
+      v: PROTOCOL_VERSION,
+      type: "key_confirm",
+      connectionId: session.connectionId,
+      sessionId: frame.sessionId,
+      senderFingerprint: identity.fingerprint,
+      algorithm: SESSION_CIPHER_ALGORITHM,
+      sequence: 0,
+      ciphertext: confirmation.ciphertext,
+      authTag: confirmation.authTag,
+    });
+    this.emitSecurity(
+      "info",
+      "Sent an AES-GCM key-possession confirmation; awaiting the initiator's secure-ready proof.",
+    );
+    this.emitState();
+  }
+
+  private acceptKeyConfirm(session: PeerSession, frame: KeyConfirmFrame): void {
+    const identity = this.requireIdentityForProtocol(session);
+    if (!identity) {
+      return;
+    }
+    const secure = session.secure;
+    if (
+      !secure ||
+      secure.role !== "initiator" ||
+      secure.stage !== "WAITING_FOR_CONFIRM"
+    ) {
+      this.failProtocol(
+        session,
+        "unexpected_frame",
+        "Received key confirmation without an active initiator negotiation.",
+      );
+      return;
+    }
+    if (
+      !session.peerFingerprint ||
+      frame.sessionId !== secure.sessionId ||
+      frame.senderFingerprint !== session.peerFingerprint
+    ) {
+      this.failProtocol(
+        session,
+        "invalid_frame",
+        "Key confirmation is bound to a different secure session or identity.",
+      );
+      return;
+    }
+
+    try {
+      decryptKeyConfirmation(
+        {
+          key: secure.key,
+          frameType: "key_confirm",
+          connectionId: session.connectionId,
+          sessionId: secure.sessionId,
+          senderFingerprint: session.peerFingerprint,
+          recipientFingerprint: identity.fingerprint,
+          sequence: 0,
+        },
+        frame.ciphertext,
+        frame.authTag,
+      );
+    } catch {
+      this.failProtocol(session, "invalid_frame", "Peer AES-GCM key confirmation is invalid.");
+      return;
+    }
+    this.emitSecurity(
+      "success",
+      "Peer AES-GCM key confirmation is valid; the recipient proved possession of the session key.",
+    );
+
+    let ready: ReturnType<typeof encryptKeyConfirmation>;
+    try {
+      ready = encryptKeyConfirmation({
+        key: secure.key,
+        frameType: "secure_ready",
+        connectionId: session.connectionId,
+        sessionId: secure.sessionId,
+        senderFingerprint: identity.fingerprint,
+        recipientFingerprint: session.peerFingerprint,
+        sequence: 0,
+      });
+    } catch {
+      this.failProtocol(session, "invalid_frame", "Unable to create the secure-ready proof.");
+      return;
+    }
+
+    this.writeFrame(session, {
+      v: PROTOCOL_VERSION,
+      type: "secure_ready",
+      connectionId: session.connectionId,
+      sessionId: secure.sessionId,
+      senderFingerprint: identity.fingerprint,
+      algorithm: SESSION_CIPHER_ALGORITHM,
+      sequence: 0,
+      ciphertext: ready.ciphertext,
+      authTag: ready.authTag,
+    });
+    secure.stage = "ACTIVE";
+    this.emitSecurity(
+      "success",
+      "Secure session is active; an AES-GCM secure-ready proof was sent to the peer.",
+    );
+    this.emitState();
+  }
+
+  private acceptSecureReady(session: PeerSession, frame: SecureReadyFrame): void {
+    const identity = this.requireIdentityForProtocol(session);
+    if (!identity) {
+      return;
+    }
+    const secure = session.secure;
+    if (
+      !secure ||
+      secure.role !== "recipient" ||
+      secure.stage !== "WAITING_FOR_READY"
+    ) {
+      this.failProtocol(
+        session,
+        "unexpected_frame",
+        "Received secure-ready proof without an active recipient negotiation.",
+      );
+      return;
+    }
+    if (
+      !session.peerFingerprint ||
+      frame.sessionId !== secure.sessionId ||
+      frame.senderFingerprint !== session.peerFingerprint
+    ) {
+      this.failProtocol(
+        session,
+        "invalid_frame",
+        "Secure-ready proof is bound to a different secure session or identity.",
+      );
+      return;
+    }
+
+    try {
+      decryptKeyConfirmation(
+        {
+          key: secure.key,
+          frameType: "secure_ready",
+          connectionId: session.connectionId,
+          sessionId: secure.sessionId,
+          senderFingerprint: session.peerFingerprint,
+          recipientFingerprint: identity.fingerprint,
+          sequence: 0,
+        },
+        frame.ciphertext,
+        frame.authTag,
+      );
+    } catch {
+      this.failProtocol(session, "invalid_frame", "Peer AES-GCM secure-ready proof is invalid.");
+      return;
+    }
+
+    secure.stage = "ACTIVE";
+    this.emitSecurity(
+      "success",
+      "Peer AES-GCM secure-ready proof is valid; both clients proved possession of the session key.",
+    );
+    this.emitSecurity("success", "Secure session is active.");
+    this.emitState();
+  }
+
   private sendIdentityKey(
     session: PeerSession,
     requestId: string,
@@ -858,6 +1236,10 @@ export class PeerService extends EventEmitter {
     }
 
     this.clearHandshakeTimer(session);
+    if (session.secure) {
+      session.secure.key.fill(0);
+      session.secure = null;
+    }
     if (notifyPeer && session.phase === "READY") {
       this.writeFrame(session, {
         v: PROTOCOL_VERSION,

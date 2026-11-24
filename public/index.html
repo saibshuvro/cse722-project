@@ -114,10 +114,16 @@
           <button id="reject-fingerprint-button" class="button--danger" type="button" disabled>
             Reject fingerprint
           </button>
+          <button id="start-secure-session-button" type="button" disabled>
+            Start Secure Session
+          </button>
         </div>
         <p class="verification-help">
           Compare each received peer fingerprint with the fingerprint displayed on the other
           machine. Both users must confirm a match before secure-key transfer is enabled.
+        </p>
+        <p id="secure-session-status" class="verification-help">
+          Secure session not started.
         </p>
       </section>
 
@@ -163,7 +169,7 @@
             <li id="step-connected"><span>1</span>Direct TCP connected</li>
             <li id="step-clear"><span>2</span>Plaintext exchanged both ways</li>
             <li id="step-identity" class="is-future"><span>3</span>Public keys verified</li>
-            <li class="is-future"><span>4</span>Secure session active</li>
+            <li id="step-secure" class="is-future"><span>4</span>Secure session active</li>
           </ol>
         </aside>
       </section>

@@ -172,7 +172,7 @@ describe("PeerService", () => {
   });
 
   it(
-    "exchanges identity keys and requires signed verification from both peers",
+    "verifies identities and establishes an authenticated AES session",
     async () => {
       const firstDirectory = await mkdtemp(join(tmpdir(), "cse722-peer-first-"));
       const secondDirectory = await mkdtemp(join(tmpdir(), "cse722-peer-second-"));
@@ -182,6 +182,14 @@ describe("PeerService", () => {
       ]);
       const first = new PeerService(testConfig(), firstIdentity.identity);
       const second = new PeerService(testConfig(), secondIdentity.identity);
+      const firstSecurityEvents: string[] = [];
+      const secondSecurityEvents: string[] = [];
+      const removeFirstSecurityListener = first.onSecurityEvent((event) =>
+        firstSecurityEvents.push(event.message),
+      );
+      const removeSecondSecurityListener = second.onSecurityEvent((event) =>
+        secondSecurityEvents.push(event.message),
+      );
 
       try {
         await Promise.all([first.start(), second.start()]);
@@ -231,7 +239,39 @@ describe("PeerService", () => {
         expect(firstFinal.peerVerifiedLocalFingerprint).toBe(true);
         expect(secondFinal.localFingerprintVerified).toBe(true);
         expect(secondFinal.peerVerifiedLocalFingerprint).toBe(true);
+        expect(firstFinal.permittedActions).toContain("start_secure_session");
+        expect(secondFinal.permittedActions).toContain("start_secure_session");
+
+        const firstSecure = waitForState(first, "SECURE_ACTIVE");
+        const secondSecure = waitForState(second, "SECURE_ACTIVE");
+        first.startSecureSession();
+        expect(first.getSnapshot().state).toBe("SECURE_NEGOTIATING");
+        const [firstSecureFinal, secondSecureFinal] = await Promise.all([
+          firstSecure,
+          secondSecure,
+        ]);
+
+        expect(firstSecureFinal.permittedActions).not.toContain("send_message");
+        expect(secondSecureFinal.permittedActions).not.toContain("send_message");
+        expect(() => first.sendClearMessage("plaintext downgrade")).toThrow(/Plaintext/);
+        expect(secondSecurityEvents).toEqual(
+          expect.arrayContaining([
+            expect.stringContaining("Key offer is bound"),
+            expect.stringContaining("key-offer signature is valid"),
+            expect.stringContaining("session key decrypted"),
+            expect.stringContaining("both clients proved possession"),
+          ]),
+        );
+        expect(firstSecurityEvents).toEqual(
+          expect.arrayContaining([
+            expect.stringContaining("wrapped it for the verified peer"),
+            expect.stringContaining("recipient proved possession"),
+            expect.stringContaining("Secure session is active"),
+          ]),
+        );
       } finally {
+        removeFirstSecurityListener();
+        removeSecondSecurityListener();
         await Promise.all([first.stop(), second.stop()]);
         await Promise.all([
           rm(firstDirectory, { recursive: true, force: true }),

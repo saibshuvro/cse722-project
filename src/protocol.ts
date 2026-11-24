@@ -18,6 +18,13 @@ const signatureSchema = z
   .min(1)
   .max(1_024)
   .regex(/^[A-Za-z0-9+/]+={0,2}$/);
+const base64Schema = z
+  .string()
+  .min(1)
+  .max(2_048)
+  .regex(/^[A-Za-z0-9+/]+={0,2}$/);
+const sessionIdSchema = z.string().regex(/^[A-Za-z0-9+/]{22}==$/);
+const authTagSchema = z.string().regex(/^[A-Za-z0-9+/]{22}==$/);
 
 const helloSchema = z
   .object({
@@ -82,6 +89,49 @@ const fingerprintVerifiedSchema = z
   })
   .strict();
 
+const keyOfferSchema = z
+  .object({
+    v: z.literal(PROTOCOL_VERSION),
+    type: z.literal("key_offer"),
+    connectionId: uuidSchema,
+    sessionId: sessionIdSchema,
+    senderFingerprint: fingerprintSchema,
+    recipientFingerprint: fingerprintSchema,
+    algorithm: z.literal("RSA-OAEP-SHA256"),
+    wrappedKey: base64Schema,
+    signatureAlgorithm: z.literal("RSA-PSS-SHA256"),
+    signature: signatureSchema,
+  })
+  .strict();
+
+const keyConfirmSchema = z
+  .object({
+    v: z.literal(PROTOCOL_VERSION),
+    type: z.literal("key_confirm"),
+    connectionId: uuidSchema,
+    sessionId: sessionIdSchema,
+    senderFingerprint: fingerprintSchema,
+    algorithm: z.literal("AES-256-GCM"),
+    sequence: z.literal(0),
+    ciphertext: base64Schema,
+    authTag: authTagSchema,
+  })
+  .strict();
+
+const secureReadySchema = z
+  .object({
+    v: z.literal(PROTOCOL_VERSION),
+    type: z.literal("secure_ready"),
+    connectionId: uuidSchema,
+    sessionId: sessionIdSchema,
+    senderFingerprint: fingerprintSchema,
+    algorithm: z.literal("AES-256-GCM"),
+    sequence: z.literal(0),
+    ciphertext: base64Schema,
+    authTag: authTagSchema,
+  })
+  .strict();
+
 const protocolErrorSchema = z
   .object({
     v: z.literal(PROTOCOL_VERSION),
@@ -114,6 +164,9 @@ export const peerFrameSchema = z.discriminatedUnion("type", [
   identityRequestSchema,
   identityKeySchema,
   fingerprintVerifiedSchema,
+  keyOfferSchema,
+  keyConfirmSchema,
+  secureReadySchema,
   protocolErrorSchema,
   goodbyeSchema,
 ]);
@@ -125,6 +178,9 @@ export type ClearMessageFrame = z.infer<typeof clearMessageSchema>;
 export type IdentityRequestFrame = z.infer<typeof identityRequestSchema>;
 export type IdentityKeyFrame = z.infer<typeof identityKeySchema>;
 export type FingerprintVerifiedFrame = z.infer<typeof fingerprintVerifiedSchema>;
+export type KeyOfferFrame = z.infer<typeof keyOfferSchema>;
+export type KeyConfirmFrame = z.infer<typeof keyConfirmSchema>;
+export type SecureReadyFrame = z.infer<typeof secureReadySchema>;
 export type ProtocolErrorFrame = z.infer<typeof protocolErrorSchema>;
 export type ProtocolErrorCode = ProtocolErrorFrame["code"];
 

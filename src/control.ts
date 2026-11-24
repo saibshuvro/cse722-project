@@ -26,6 +26,7 @@ const controlCommandSchema = z.discriminatedUnion("type", [
     .strict(),
   z.object({ type: z.literal("disconnect") }).strict(),
   z.object({ type: z.literal("exchange_keys") }).strict(),
+  z.object({ type: z.literal("start_secure_session") }).strict(),
   z
     .object({
       type: z.literal("verify_fingerprint"),
@@ -154,6 +155,9 @@ export function attachControlSocket(
             break;
           case "verify_fingerprint":
             peerService.verifyPeerFingerprint(result.data.decision);
+            break;
+          case "start_secure_session":
+            peerService.startSecureSession();
             break;
           case "send_message":
             peerService.sendClearMessage(result.data.text);
