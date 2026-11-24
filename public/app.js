@@ -15,10 +15,16 @@ const messageList = document.querySelector("#message-list");
 const emptyChat = document.querySelector("#empty-chat");
 const stepConnected = document.querySelector("#step-connected");
 const stepClear = document.querySelector("#step-clear");
+const identityAlgorithm = document.querySelector("#identity-algorithm");
+const localFingerprint = document.querySelector("#local-fingerprint");
+const identityCreated = document.querySelector("#identity-created");
+const toggleFingerprint = document.querySelector("#toggle-fingerprint");
+const copyFingerprint = document.querySelector("#copy-fingerprint");
 
 let controlSocket;
 let currentState = "DISCONNECTED";
 let reconnectTimer;
+let fingerprintValue = "";
 
 function appendEvent(message, severity = "info", timestamp = new Date().toISOString()) {
   const item = document.createElement("li");
@@ -101,6 +107,17 @@ function applyState(message) {
   }
 }
 
+function applyIdentity(message) {
+  fingerprintValue = message.fingerprint;
+  identityAlgorithm.textContent = message.algorithm;
+  identityCreated.textContent = `Identity created ${new Date(message.createdAt).toLocaleString()}`;
+  localFingerprint.textContent = "Fingerprint hidden";
+  localFingerprint.dataset.visible = "false";
+  toggleFingerprint.textContent = "Show fingerprint";
+  toggleFingerprint.disabled = false;
+  copyFingerprint.disabled = false;
+}
+
 async function loadHealth() {
   try {
     const response = await fetch("/health", { cache: "no-store" });
@@ -142,6 +159,9 @@ function connectControlSocket() {
         break;
       case "chat_message":
         appendMessage(message);
+        break;
+      case "identity":
+        applyIdentity(message);
         break;
       case "security_event":
         appendEvent(message.message, message.severity, message.timestamp);
@@ -192,6 +212,22 @@ messageForm.addEventListener("submit", (event) => {
   }
   if (sendCommand({ type: "send_message", text })) {
     messageInput.value = "";
+  }
+});
+
+toggleFingerprint.addEventListener("click", () => {
+  const currentlyVisible = localFingerprint.dataset.visible === "true";
+  localFingerprint.dataset.visible = currentlyVisible ? "false" : "true";
+  localFingerprint.textContent = currentlyVisible ? "Fingerprint hidden" : fingerprintValue;
+  toggleFingerprint.textContent = currentlyVisible ? "Show fingerprint" : "Hide fingerprint";
+});
+
+copyFingerprint.addEventListener("click", async () => {
+  try {
+    await navigator.clipboard.writeText(fingerprintValue);
+    appendEvent("Local public-key fingerprint copied to the clipboard.", "success");
+  } catch {
+    appendEvent("Unable to copy the fingerprint automatically.", "error");
   }
 });
 

@@ -2,7 +2,7 @@
 
 A two-peer chat application for demonstrating plaintext communication, manual identity-key verification, authenticated AES-256 key transfer, and AES-256-GCM encrypted messaging.
 
-Phase 2 currently provides direct TCP connection and deliberately unencrypted chat between the Ubuntu host and Kali VM. Identity and cryptographic stages are added in later phases.
+Phase 3 provides direct TCP plaintext chat plus a persistent RSA-3072 identity on each client. Public-key exchange and encrypted chat are added in later phases.
 
 ## Requirements
 
@@ -61,6 +61,20 @@ If TCP port `5050` is blocked by a firewall, allow inbound TCP traffic for that 
 
 This plaintext behavior is intentional for the assignment's pre-encryption stage. Later phases replace chat frames with AES-256-GCM ciphertext after manual identity verification and authenticated key transfer.
 
+## Local identity and fingerprint
+
+On first launch, each machine generates its own RSA-3072 identity. The key pair and installation metadata are stored outside the repository under:
+
+```text
+~/.local/share/cse722-chat/
+```
+
+The directory is restricted to the current Linux user (`0700`), and the private key uses mode `0600`. The application never sends the private key to the browser or peer.
+
+Use **Show fingerprint** in the GUI to display the SHA-256 fingerprint of the public identity key. The same machine must display the same fingerprint after the application restarts, while Ubuntu and Kali must display different fingerprints.
+
+If the stored identity is incomplete, corrupt, or contains mismatched keys, startup fails instead of silently generating a replacement identity. Back up or move the entire identity directory together; never copy one client's identity directory to the other machine.
+
 ## Configuration
 
 | Variable | Default | Purpose |
@@ -68,7 +82,7 @@ This plaintext behavior is intentional for the assignment's pre-encryption stage
 | `WEB_PORT` | `3000` | Local browser interface port |
 | `CHAT_PORT` | `5050` | Peer TCP listener and destination port |
 | `CHAT_BIND_ADDRESS` | `0.0.0.0` | Peer TCP listener address |
-| `DATA_DIR` | `~/.local/share/cse722-chat` | Future identity-key storage |
+| `DATA_DIR` | `~/.local/share/cse722-chat` | Persistent identity storage |
 
 Copy `.env.example` as a reference. Environment variables must currently be exported by the shell before starting the app; `.env` files are not loaded automatically.
 

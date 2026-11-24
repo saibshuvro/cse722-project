@@ -140,7 +140,8 @@ h2 {
 
 .status,
 .phase-badge,
-.mode-badge {
+.mode-badge,
+.identity-badge {
   flex: 0 0 auto;
   padding: 0.45rem 0.75rem;
   border: 1px solid #344762;
@@ -173,6 +174,46 @@ h2 {
 
 .connection-form {
   margin-top: 1.5rem;
+}
+
+.identity-explanation {
+  max-width: 56rem;
+  margin: 1.25rem 0;
+  color: #9fb0c7;
+}
+
+.fingerprint-box {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 1rem;
+  padding: 1rem;
+  border: 1px solid #2b3d56;
+  border-radius: 0.75rem;
+  background: #091526;
+}
+
+.fingerprint-box code {
+  overflow-wrap: anywhere;
+  color: #5eead4;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 0.88rem;
+  line-height: 1.7;
+}
+
+.fingerprint-box code[data-visible="false"] {
+  color: #7f91aa;
+}
+
+.fingerprint-actions {
+  display: flex;
+  gap: 0.55rem;
+}
+
+.identity-created {
+  margin: 0.7rem 0 0;
+  color: #7f91aa;
+  font-size: 0.8rem;
 }
 
 .input-row,
@@ -413,8 +454,13 @@ dd {
   }
 
   .input-row,
-  .runtime-grid {
+  .runtime-grid,
+  .fingerprint-box {
     grid-template-columns: 1fr;
+  }
+
+  .fingerprint-actions {
+    flex-wrap: wrap;
   }
 
   .event {

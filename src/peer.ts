@@ -83,16 +83,17 @@ function errorMessage(error: unknown): string {
 }
 
 export class PeerService extends EventEmitter {
-  private readonly installationId = randomUUID();
+  private readonly installationId: string;
   private readonly config: AppConfig;
   private readonly inboundSockets = new Set<Socket>();
   private server: TcpServer | null = null;
   private session: PeerSession | null = null;
   private boundChatPort: number;
 
-  constructor(config: AppConfig) {
+  constructor(config: AppConfig, installationId: string = randomUUID()) {
     super();
     this.config = config;
+    this.installationId = installationId;
     this.boundChatPort = config.chatPort;
   }
 

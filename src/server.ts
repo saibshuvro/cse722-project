@@ -3,6 +3,7 @@ import { createServer, type Server as HttpServer } from "node:http";
 import { createApp } from "./app.js";
 import { loadConfig } from "./config.js";
 import { attachControlSocket } from "./control.js";
+import { loadOrCreateIdentity } from "./identity.js";
 import { PeerService } from "./peer.js";
 
 const WEB_BIND_ADDRESS = "127.0.0.1";
@@ -25,12 +26,23 @@ function listenHttp(server: HttpServer, port: number): Promise<void> {
 
 async function main(): Promise<void> {
   const config = loadConfig();
-  const peerService = new PeerService(config);
+  const identityResult = await loadOrCreateIdentity(config.dataDir);
+  const peerService = new PeerService(config, identityResult.identity.installationId);
   await peerService.start();
 
   const app = createApp(config);
   const server = createServer(app);
-  const controlSocket = attachControlSocket(server, config, peerService);
+  const controlSocket = attachControlSocket(
+    server,
+    config,
+    peerService,
+    {
+      algorithm: identityResult.identity.algorithm,
+      fingerprint: identityResult.identity.fingerprint,
+      createdAt: identityResult.identity.createdAt,
+    },
+    identityResult.created,
+  );
   try {
     await listenHttp(server, config.webPort);
   } catch (error) {
@@ -41,6 +53,7 @@ async function main(): Promise<void> {
 
   console.log(`CSE722 Encrypted Chat: http://localhost:${config.webPort}`);
   console.log(`Peer TCP listener: ${config.chatBindAddress}:${peerService.listeningPort}`);
+  console.log(`Local ${identityResult.identity.algorithm} fingerprint: ${identityResult.identity.fingerprint}`);
 
   let shuttingDown = false;
   const shutDown = async (signal: string): Promise<void> => {

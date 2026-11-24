@@ -62,6 +62,34 @@
         </dl>
       </section>
 
+      <section class="panel identity-panel" aria-labelledby="identity-heading">
+        <div class="panel__heading">
+          <div>
+            <p class="step-label">Local identity</p>
+            <h2 id="identity-heading">Public-key fingerprint</h2>
+          </div>
+          <span id="identity-algorithm" class="identity-badge">Loading…</span>
+        </div>
+
+        <p class="identity-explanation">
+          This fingerprint identifies the public half of this client's persistent identity key.
+          The private key remains in protected local storage.
+        </p>
+
+        <div class="fingerprint-box">
+          <code id="local-fingerprint" data-visible="false">Fingerprint hidden</code>
+          <div class="fingerprint-actions">
+            <button id="toggle-fingerprint" class="button--secondary" type="button" disabled>
+              Show fingerprint
+            </button>
+            <button id="copy-fingerprint" class="button--secondary" type="button" disabled>
+              Copy
+            </button>
+          </div>
+        </div>
+        <p id="identity-created" class="identity-created">Loading local identity…</p>
+      </section>
+
       <section class="workspace-grid">
         <section class="panel chat-panel" aria-labelledby="chat-heading">
           <div class="panel__heading">

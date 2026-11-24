@@ -11,6 +11,12 @@ import {
 } from "./peer.js";
 import { MAX_MESSAGE_BYTES } from "./protocol.js";
 
+interface ControlIdentity {
+  readonly algorithm: "RSA-3072";
+  readonly fingerprint: string;
+  readonly createdAt: string;
+}
+
 const controlCommandSchema = z.discriminatedUnion("type", [
   z
     .object({
@@ -35,6 +41,12 @@ type BackendMessage =
   | ({ readonly type: "state" } & StateSnapshot)
   | ChatMessageEvent
   | SecurityEvent
+  | {
+      readonly type: "identity";
+      readonly algorithm: "RSA-3072";
+      readonly fingerprint: string;
+      readonly createdAt: string;
+    }
   | { readonly type: "error"; readonly message: string };
 
 function send(socket: WebSocket, message: BackendMessage): void {
@@ -61,6 +73,8 @@ export function attachControlSocket(
   server: HttpServer,
   config: AppConfig,
   peerService: PeerService,
+  identity: ControlIdentity,
+  identityCreated: boolean,
 ): WebSocketServer {
   const webSocketServer = new WebSocketServer({ server, path: "/control" });
 
@@ -78,6 +92,20 @@ export function attachControlSocket(
 
   webSocketServer.on("connection", (socket) => {
     send(socket, { type: "state", ...peerService.getSnapshot() });
+    send(socket, {
+      type: "identity",
+      algorithm: identity.algorithm,
+      fingerprint: identity.fingerprint,
+      createdAt: identity.createdAt,
+    });
+    send(socket, {
+      type: "security_event",
+      severity: "info",
+      timestamp: new Date().toISOString(),
+      message: identityCreated
+        ? `Generated a new ${identity.algorithm} identity and stored it locally.`
+        : `Loaded the existing ${identity.algorithm} identity from local storage.`,
+    });
     send(socket, {
       type: "security_event",
       severity: "info",
